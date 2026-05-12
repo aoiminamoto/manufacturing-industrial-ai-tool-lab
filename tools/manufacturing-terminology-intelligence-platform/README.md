@@ -62,3 +62,12 @@ This platform explores:
 ## Portfolio Purpose
 
 This project demonstrates industrial AI system design, manufacturing knowledge infrastructure concepts, multilingual operational support, and software engineering workflow development.
+
+## Environment Variables
+
+This project uses environment variables for API configuration.
+
+Create a local `.env` file and add your own API credentials:
+
+```env
+OPENAI_API_KEY=your_api_key_here
