@@ -1,0 +1,6 @@
+id,japanese,english,category,notes
+1,稼働,operation status,production monitoring,Used for machine operation monitoring
+2,異常,abnormal condition,alarm,Used for machine abnormal status
+3,搬送,transfer,material handling,Used for carrier or work transfer
+4,ワーク,workpiece,manufacturing object,Item being processed
+5,スパッタ,spatter,process defect,Particle contamination from manufacturing process
