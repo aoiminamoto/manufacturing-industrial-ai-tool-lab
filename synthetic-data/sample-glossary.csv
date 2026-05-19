@@ -1,0 +1,8 @@
+JP,EN,Category,Note
+脱泡機,Degassing machine,Equipment,Synthetic example
+号口設備,Production line equipment,Equipment,Synthetic example
+設備異常,Equipment fault,Alarm,Synthetic example
+品番,Part number,Production,Synthetic example
+工程,Process,Process,Synthetic example
+良品,OK part,Quality,Synthetic example
+不良,NG part,Quality,Synthetic example

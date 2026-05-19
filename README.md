@@ -1,32 +1,82 @@
 # Manufacturing & Industrial AI Tool Lab
 
-A portfolio lab for building AI-driven manufacturing tools using synthetic and dummy industrial datasets.
+A portfolio lab for building AI-ready manufacturing knowledge systems using synthetic and sanitized industrial examples.
 
-This lab focuses on transforming fragmented manufacturing knowledge, multilingual terminology, machine failure codes, vendor data, and MES-related information into structured software systems.
+This repository focuses on how fragmented plant knowledge, multilingual terminology, machine signals, NG codes, maintenance actions, and MES-related data can be transformed into governed software systems for AI-assisted manufacturing workflows.
 
-No confidential company data is included in this repository.
+No confidential company data, production data, credentials, or internal deployment details are included in this repository.
+
+## Mission
+
+Build AI-ready manufacturing knowledge systems that turn fragmented plant terminology, process knowledge, and operational data into governed tools for translation, troubleshooting, quality intelligence, and decision support.
+
+## Core Principle
+
+Manufacturing AI quality depends not only on model capability, but on the quality, governance, traceability, and AI-readiness of internal engineering and process knowledge.
 
 ## Focus Areas
 
-- Industrial AI tools
+- Manufacturing AI ontology and semantic knowledge foundations
+- Glossary-controlled multilingual technical translation
 - Manufacturing terminology standardization
-- NG code intelligence
-- MES data alignment
-- Vendor data validation
-- Operator AI assistance
-- Human-centered manufacturing systems
+- PLC / HMI comment translation concepts
+- NG code intelligence and troubleshooting context
+- MES and shop-floor data alignment
+- Human-centered manufacturing AI systems
+- Governed plant knowledge for reliable AI output
 
-## Tool Projects
+## Current Lab Projects
 
-### 1. Manufacturing Terminology AI Platform
-A tool for managing bilingual manufacturing terminology and improving AI-assisted technical translation.
+### 1. JP-EN Plant Translation Tool Concept
 
-### 2. NG Code Intelligence System
-A structured system for organizing machine NG codes, failure categories, and troubleshooting suggestions.
+A glossary-controlled manufacturing translation workflow that applies validated terminology before AI translation.
 
-### 3. MES Data Alignment Dashboard
-A dashboard concept for validating consistency between manufacturing data sources.
+### 2. Manufacturing AI Ontology Concept
+
+A governed semantic foundation connecting plant terminology, PLC/HMI comments, NG codes, alarms, signals, process context, and maintenance actions.
+
+### 3. PLC Fix AI Assistant Concept
+
+A future assistant concept for helping maintenance members interpret machine conditions, NG situations, alarms, and operational symptoms using governed plant knowledge.
+
+### 4. NG Code Intelligence System Concept
+
+A structured approach for organizing NG codes, failure categories, equipment context, and previous countermeasures.
+
+## Conceptual Architecture
+
+```text
+Input
+-> Validated Glossary / Governed Plant Knowledge
+-> Manufacturing AI Processing
+-> Reviewable Output
+-> Future Plant AI Applications
+```
+
+## Repository Structure
+
+```text
+docs/
+  architecture/
+  case-studies/
+  runbooks/
+projects/
+  jp-en-plant-translator/
+  plc-fix-ai-assistant-concept/
+  ng-code-intelligence-concept/
+synthetic-data/
+```
+
+## Data Policy
+
+This repository uses only synthetic, dummy, or sanitized examples. It does not include:
+
+- Company confidential data
+- Real production records
+- Real internal glossary files
+- API keys or credentials
+- Internal AWS account or deployment details
 
 ## Portfolio Purpose
 
-This repository demonstrates software engineering, industrial data modeling, AI product thinking, and manufacturing systems understanding.
+This repository demonstrates software engineering, manufacturing systems understanding, industrial data modeling, AI product thinking, and human-centered manufacturing AI architecture.

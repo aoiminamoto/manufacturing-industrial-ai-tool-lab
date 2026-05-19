@@ -1,0 +1,5 @@
+M123 Motor overload detected
+X100 Home limit switch ON confirmation
+Y205 Cylinder advance command
+Heartbeat signal from upstream equipment
+Master ON condition confirmed

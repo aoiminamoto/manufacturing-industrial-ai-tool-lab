@@ -1,0 +1,4 @@
+ng_code,process,equipment,symptom,possible_cause,countermeasure
+NG-001,Assembly,Press unit,Part position abnormality,Guide misalignment,Check guide position and sensor status
+NG-002,Inspection,Vision station,Height inspection failed,Lighting variation,Verify lighting and camera calibration
+NG-003,Transfer,Robot hand,Pickup failure,Vacuum loss,Check vacuum pressure and cup condition
