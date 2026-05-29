@@ -1057,16 +1057,24 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
         def update_progress(done, total, done_batches, total_batches, elapsed, message):
             ratio = 1.0 if total == 0 else min(done / total, 1.0)
             progress.progress(ratio)
-            remaining = 0
+            eta_text = "calculating"
             if done > saved_count and ratio < 1.0:
                 rate = elapsed / max(done - saved_count, 1)
-                remaining = rate * (total - done)
+                eta_text = format_duration(rate * (total - done))
+            elif ratio >= 1.0:
+                eta_text = "0s"
+
+            if done_batches == 0 and total_batches:
+                batch_text = f"Ready to continue with {total_batches} batch(es)."
+            else:
+                batch_text = f"Batch {done_batches}/{total_batches}."
+
             status.write(message)
             metrics.write(
                 f"Translated {done}/{total} Japanese block(s). "
-                f"Batch {done_batches}/{total_batches}. "
+                f"{batch_text} "
                 f"Elapsed {format_duration(elapsed)}. "
-                f"ETA {format_duration(remaining)}."
+                f"ETA {eta_text}."
             )
 
         try:
