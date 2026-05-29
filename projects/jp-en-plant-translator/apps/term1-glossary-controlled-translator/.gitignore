@@ -1,0 +1,13 @@
+app.env
+.term1_progress/
+.term1_usage_count.json
+glossary.xlsx
+glossary.csv
+*.xlsx
+*.xlsm
+*.xls
+*.docx
+*.pptx
+*.txt
+!README.md
+!requirements.txt

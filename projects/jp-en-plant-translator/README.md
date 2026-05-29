@@ -15,6 +15,16 @@ User input
 -> reviewable English output
 ```
 
+## Runnable Prototype
+
+A runnable Streamlit prototype is included in:
+
+```text
+apps/term1-glossary-controlled-translator/
+```
+
+This app is named clearly as the Term1 glossary-controlled translator so it can be managed separately from the broader concept documentation. It supports text translation, document upload, large Excel processing, checkpoint resume, retry handling, and local app-use counting. Secret files and real company glossary files are intentionally excluded.
+
 ## Example Terms
 
 - Butterfly valve
