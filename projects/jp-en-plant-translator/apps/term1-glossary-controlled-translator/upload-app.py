@@ -43,6 +43,7 @@ USAGE_COUNT_PATH = BASE_DIR / ".term1_usage_count.json"
 PROTECTED_PATTERN = re.compile(
     r"\b(?:[A-Z]{1,6}[-_]?\d{1,6}[A-Z]?|\d+[A-Z]{1,4}|[XYMDSZR][0-9]{1,5}|[A-Z]{2,}-[A-Z0-9-]+)\b"
 )
+LEADING_CODE_PATTERN = re.compile(r"^([A-Z]{1,6}[-_]?\d{1,6}[A-Z]?)(.*)$")
 
 WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 PPT_NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
@@ -671,6 +672,36 @@ def write_text_file(blocks: list[TextBlock], translations: dict[str, str]) -> by
     return "\n\n".join(lines).encode("utf-8-sig")
 
 
+def sniff_csv_dialect(text: str):
+    sample = "\n".join(text.splitlines()[:100])
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",\t;|")
+    except csv.Error:
+        return csv.excel
+
+
+def split_leading_code_cell(value: str) -> list[str]:
+    cleaned = clean_text(value)
+    match = LEADING_CODE_PATTERN.match(cleaned)
+    if not match:
+        return [value]
+    code, remainder = match.groups()
+    remainder = clean_text(remainder)
+    if not remainder:
+        return [value]
+    return [code, remainder]
+
+
+def normalize_csv_structure(rows: list[list[str]]) -> list[list[str]]:
+    normalized = []
+    for row in rows:
+        if len(row) == 1:
+            normalized.append(split_leading_code_cell(row[0]))
+        else:
+            normalized.append(row)
+    return normalized
+
+
 def read_csv_rows(raw: bytes) -> list[list[str]]:
     text = decode_document_text(raw)
     return parse_csv_rows_lenient(text)
@@ -682,16 +713,17 @@ def parse_csv_rows_lenient(text: str) -> list[list[str]]:
             "The CSV text could not be decoded into readable Japanese. "
             "Please save the CSV as UTF-8 CSV or Excel .xlsx, then upload again."
         )
+    dialect = sniff_csv_dialect(text)
     try:
-        return [row for row in csv.reader(io.StringIO(text, newline=""))]
+        return normalize_csv_structure([row for row in csv.reader(io.StringIO(text, newline=""), dialect)])
     except csv.Error:
         rows = []
         for line in text.splitlines():
             try:
-                rows.append(next(csv.reader([line])))
+                rows.append(next(csv.reader([line], dialect)))
             except csv.Error:
                 rows.append([line])
-        return rows
+        return normalize_csv_structure(rows)
 
 
 def extract_csv_blocks(raw: bytes) -> list[TextBlock]:
