@@ -78,6 +78,43 @@ def should_translate(text: str) -> bool:
     return has_japanese_text(clean_text(text))
 
 
+def decode_document_text(raw: bytes) -> str:
+    candidates = []
+    has_utf16_bom = raw.startswith((b"\xff\xfe", b"\xfe\xff"))
+    null_ratio = raw.count(b"\x00") / max(len(raw), 1)
+    encodings = ["utf-8-sig", "utf-8", "cp932", "shift_jis", "euc_jp", "iso2022_jp"]
+    if has_utf16_bom or null_ratio > 0.1:
+        encodings = ["utf-16", "utf-16-le", "utf-16-be"] + encodings
+    encodings.append("cp1252")
+
+    for encoding in encodings:
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+
+        japanese_count = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text))
+        replacement_count = text.count("�")
+        mojibake_count = sum(text.count(marker) for marker in ("ã", "Â", "Ã", "\x00"))
+        control_count = sum(1 for char in text if ord(char) < 32 and char not in "\r\n\t")
+        c1_count = sum(1 for char in text if 0x80 <= ord(char) <= 0x9F)
+        ascii_count = sum(1 for char in text if ord(char) < 128)
+        score = (
+            japanese_count * 50
+            + min(ascii_count, 200) * 0.01
+            - replacement_count * 200
+            - mojibake_count * 80
+            - control_count * 60
+            - c1_count * 40
+        )
+        candidates.append((score, encoding, text))
+
+    if candidates:
+        return max(candidates, key=lambda candidate: candidate[0])[2]
+
+    return raw.decode("utf-8", errors="replace")
+
+
 def document_fingerprint(file_name: str, raw: bytes) -> str:
     digest = hashlib.sha256(raw).hexdigest()[:16]
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(file_name).stem).strip("_") or "document"
@@ -534,12 +571,7 @@ def translate_blocks_batch(
 
 
 def read_text_file(raw: bytes) -> str:
-    for encoding in ("utf-8-sig", "utf-8", "cp932", "shift_jis"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
+    return decode_document_text(raw)
 
 
 def write_text_file(blocks: list[TextBlock], translations: dict[str, str]) -> bytes:
@@ -550,17 +582,16 @@ def write_text_file(blocks: list[TextBlock], translations: dict[str, str]) -> by
 
 
 def read_csv_rows(raw: bytes) -> list[list[str]]:
-    for encoding in ("utf-8-sig", "utf-8", "cp932", "shift_jis", "cp1252"):
-        try:
-            text = raw.decode(encoding)
-            return parse_csv_rows_lenient(text)
-        except UnicodeDecodeError:
-            continue
-    text = raw.decode("utf-8", errors="replace")
+    text = decode_document_text(raw)
     return parse_csv_rows_lenient(text)
 
 
 def parse_csv_rows_lenient(text: str) -> list[list[str]]:
+    if "�" in text and not has_japanese_text(text):
+        raise ValueError(
+            "The CSV text could not be decoded into readable Japanese. "
+            "Please save the CSV as UTF-8 CSV or Excel .xlsx, then upload again."
+        )
     try:
         return [row for row in csv.reader(io.StringIO(text, newline=""))]
     except csv.Error:
