@@ -548,11 +548,44 @@ def write_text_file(blocks: list[TextBlock], translations: dict[str, str]) -> by
     return "\n\n".join(lines).encode("utf-8-sig")
 
 
+def read_csv_document(raw: bytes) -> pd.DataFrame:
+    for encoding in ("utf-8-sig", "utf-8", "cp932", "shift_jis", "cp1252"):
+        try:
+            return pd.read_csv(io.BytesIO(raw), encoding=encoding, dtype=str, keep_default_na=False)
+        except UnicodeDecodeError:
+            continue
+    return pd.read_csv(io.BytesIO(raw), encoding="utf-8", dtype=str, keep_default_na=False, encoding_errors="replace")
+
+
+def extract_csv_blocks(raw: bytes) -> list[TextBlock]:
+    df = read_csv_document(raw)
+    blocks = []
+    for row_index, row in df.iterrows():
+        for column in df.columns:
+            value = clean_text(row[column])
+            if value:
+                blocks.append(TextBlock(location=f"csv:{row_index}:{column}", text=value))
+    return blocks
+
+
+def build_translated_csv(raw: bytes, translations: dict[str, str]) -> bytes:
+    df = read_csv_document(raw)
+    for row_index, row in df.iterrows():
+        for column in df.columns:
+            key = f"csv:{row_index}:{column}"
+            if key in translations:
+                df.at[row_index, column] = translations[key]
+    return df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+
 def extract_text_blocks(raw: bytes, file_name: str) -> list[TextBlock]:
     lower_name = file_name.lower()
     if lower_name.endswith(".txt"):
         text = read_text_file(raw)
         return [TextBlock(location=f"text:{index}", text=part.strip()) for index, part in enumerate(text.split("\n\n")) if part.strip()]
+
+    if lower_name.endswith(".csv"):
+        return extract_csv_blocks(raw)
 
     if lower_name.endswith(".docx"):
         return extract_docx_blocks(raw)
@@ -560,7 +593,7 @@ def extract_text_blocks(raw: bytes, file_name: str) -> list[TextBlock]:
     if lower_name.endswith((".xlsx", ".xlsm")):
         return extract_xlsx_blocks(raw)
 
-    raise ValueError("Supported document types: TXT, DOCX, XLSX, XLSM.")
+    raise ValueError("Supported document types: CSV, TXT, DOCX, XLSX, XLSM.")
 
 
 def extract_docx_blocks(raw: bytes) -> list[TextBlock]:
@@ -674,13 +707,16 @@ def build_translated_document(raw: bytes, file_name: str, translations: dict[str
     if lower_name.endswith(".txt"):
         return write_text_file(blocks, translations)
 
+    if lower_name.endswith(".csv"):
+        return build_translated_csv(raw, translations)
+
     if lower_name.endswith(".docx"):
         return build_translated_docx(raw, translations)
 
     if lower_name.endswith((".xlsx", ".xlsm")):
         return build_translated_xlsx(raw, translations)
 
-    raise ValueError("Supported document types: TXT, DOCX, XLSX, XLSM.")
+    raise ValueError("Supported document types: CSV, TXT, DOCX, XLSX, XLSM.")
 
 
 def build_translated_docx(raw: bytes, translations: dict[str, str]) -> bytes:
@@ -757,6 +793,8 @@ def output_file_name(file_name: str) -> str:
 
 def mime_type(file_name: str) -> str:
     lower_name = file_name.lower()
+    if lower_name.endswith(".csv"):
+        return "text/csv"
     if lower_name.endswith(".docx"):
         return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     if lower_name.endswith(".xlsx"):
@@ -867,10 +905,10 @@ def render_text_translation(glossary: pd.DataFrame) -> None:
 
 
 def render_document_translation(glossary: pd.DataFrame) -> None:
-    st.info("Accepted document types: Word (.docx), Excel (.xlsx/.xlsm), and Text (.txt). Large file safety limit: 50 MB.")
+    st.info("Accepted document types: CSV (.csv), Word (.docx), Excel (.xlsx/.xlsm), and Text (.txt). Large file safety limit: 50 MB.")
     uploaded_document = st.file_uploader(
         "Upload Japanese document",
-        type=["txt", "docx", "xlsx", "xlsm"],
+        type=["csv", "txt", "docx", "xlsx", "xlsm"],
     )
 
     if uploaded_document is None:
@@ -938,7 +976,7 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
         if not blocks:
             st.warning(
                 "No translatable text was found in this document. "
-                "Please upload a TXT, DOCX, XLSX, or XLSM file that contains selectable text, not scanned images. "
+                "Please upload a CSV, TXT, DOCX, XLSX, or XLSM file that contains selectable text, not scanned images. "
                 "For Excel, save old .xls files as .xlsx first."
             )
             return
