@@ -553,11 +553,24 @@ def read_csv_rows(raw: bytes) -> list[list[str]]:
     for encoding in ("utf-8-sig", "utf-8", "cp932", "shift_jis", "cp1252"):
         try:
             text = raw.decode(encoding)
-            return [row for row in csv.reader(io.StringIO(text))]
+            return parse_csv_rows_lenient(text)
         except UnicodeDecodeError:
             continue
     text = raw.decode("utf-8", errors="replace")
-    return [row for row in csv.reader(io.StringIO(text))]
+    return parse_csv_rows_lenient(text)
+
+
+def parse_csv_rows_lenient(text: str) -> list[list[str]]:
+    try:
+        return [row for row in csv.reader(io.StringIO(text, newline=""))]
+    except csv.Error:
+        rows = []
+        for line in text.splitlines():
+            try:
+                rows.append(next(csv.reader([line])))
+            except csv.Error:
+                rows.append([line])
+        return rows
 
 
 def extract_csv_blocks(raw: bytes) -> list[TextBlock]:
