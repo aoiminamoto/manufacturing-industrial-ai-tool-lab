@@ -60,6 +60,26 @@ class TextBlock:
     text: str
 
 
+@dataclass
+class TokenUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+    def add(self, other: "TokenUsage") -> None:
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.total_tokens += other.total_tokens
+
+    def display(self) -> str:
+        if self.total_tokens <= 0:
+            return "Token usage unavailable."
+        return (
+            f"Tokens: input {self.input_tokens:,}, "
+            f"output {self.output_tokens:,}, total {self.total_tokens:,}."
+        )
+
+
 def load_env() -> None:
     if ENV_PATH.exists():
         load_dotenv(ENV_PATH)
@@ -398,6 +418,35 @@ def openai_timeout_seconds() -> float:
         return float(OPENAI_TIMEOUT_SECONDS)
 
 
+def response_token_usage(response) -> TokenUsage:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return TokenUsage()
+
+    def usage_value(*names: str) -> int:
+        for name in names:
+            value = getattr(usage, name, None)
+            if value is not None:
+                return int(value)
+        if isinstance(usage, dict):
+            for name in names:
+                value = usage.get(name)
+                if value is not None:
+                    return int(value)
+        return 0
+
+    input_tokens = usage_value("input_tokens", "prompt_tokens")
+    output_tokens = usage_value("output_tokens", "completion_tokens")
+    total_tokens = usage_value("total_tokens")
+    if total_tokens == 0:
+        total_tokens = input_tokens + output_tokens
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+    )
+
+
 def format_translation_error(exc: Exception) -> str:
     if isinstance(exc, APIConnectionError):
         return (
@@ -413,7 +462,7 @@ def format_translation_error(exc: Exception) -> str:
     return str(exc)
 
 
-def translate_text(source_text: str, hits: list[TermHit], protected_codes: list[str]) -> str:
+def translate_text(source_text: str, hits: list[TermHit], protected_codes: list[str]) -> tuple[str, TokenUsage]:
     client = openai_client()
     response = client.responses.create(
         model=openai_model(),
@@ -421,14 +470,14 @@ def translate_text(source_text: str, hits: list[TermHit], protected_codes: list[
         temperature=0.1,
         timeout=openai_timeout_seconds(),
     )
-    return response.output_text.strip()
+    return response.output_text.strip(), response_token_usage(response)
 
 
-def translate_block(text: str, glossary: pd.DataFrame) -> tuple[str, list[TermHit]]:
+def translate_block(text: str, glossary: pd.DataFrame) -> tuple[str, list[TermHit], TokenUsage]:
     glossary_applied_text, hits = apply_glossary_to_source(text, glossary)
     protected_codes = find_protected_codes(text)
-    translation = translate_text(glossary_applied_text, hits, protected_codes)
-    return translation, hits
+    translation, token_usage = translate_text(glossary_applied_text, hits, protected_codes)
+    return translation, hits, token_usage
 
 
 def build_batch_prompt(items: list[tuple[int, str, list[TermHit], list[str]]]) -> str:
@@ -497,12 +546,13 @@ def translate_blocks_batch(
     glossary: pd.DataFrame,
     checkpoint_path=None,
     progress_callback=None,
-) -> tuple[dict[str, str], list[TermHit]]:
+) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
     client = openai_client()
     translations = load_checkpoint(checkpoint_path) if checkpoint_path else {}
     translatable_blocks = [block for block in blocks if should_translate(block.text)]
     pending_blocks = [block for block in translatable_blocks if block.location not in translations]
     all_hits = []
+    token_usage = TokenUsage()
     started_at = time.time()
     completed_at_start = len(translatable_blocks) - len(pending_blocks)
     total_batches = (len(pending_blocks) + DOCUMENT_BATCH_SIZE - 1) // DOCUMENT_BATCH_SIZE
@@ -537,6 +587,7 @@ def translate_blocks_batch(
                     temperature=0.1,
                     timeout=openai_timeout_seconds(),
                 )
+                token_usage.add(response_token_usage(response))
                 parsed = parse_batch_translation(response.output_text.strip(), [item[0] for item in items])
                 missing_ids = [item[0] for item in items if item[0] not in parsed]
                 if missing_ids:
@@ -577,7 +628,7 @@ def translate_blocks_batch(
                 "Saved batch progress.",
             )
 
-    return translations, all_hits
+    return translations, all_hits, token_usage
 
 
 def read_text_file(raw: bytes) -> str:
@@ -950,9 +1001,10 @@ def render_text_translation(glossary: pd.DataFrame) -> None:
         try:
             status.write("Preparing glossary terms and protected codes...")
             progress.progress(0.2)
-            translated_text, hits = translate_block(jp_text, glossary)
+            translated_text, hits, token_usage = translate_block(jp_text, glossary)
             progress.progress(1.0)
             status.success("Translation complete.")
+            st.caption(token_usage.display())
             st.subheader("English Translation")
             st.write(translated_text)
 
@@ -1015,7 +1067,8 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
         f"Detected {len(blocks)} text block(s). "
         f"{len(translatable_blocks)} need Japanese translation. "
         f"{saved_count} already saved. "
-        f"{batch_count} batch(es) remaining."
+        f"{batch_count} batch(es) remaining. "
+        f"Batch size: {DOCUMENT_BATCH_SIZE}."
     )
 
     if len(blocks) >= 1000:
@@ -1029,7 +1082,8 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
         status.write("Saved progress found. Click Translate Document to resume.")
     metrics.write(
         f"Progress: {saved_count}/{len(translatable_blocks)} Japanese block(s) saved. "
-        f"{batch_count} batch(es) remaining."
+        f"{batch_count} batch(es) remaining. "
+        f"Batch size: {DOCUMENT_BATCH_SIZE}."
     )
 
     preview_rows = [{"Location": block.location, "Japanese Text": block.text[:300]} for block in blocks[:20]]
@@ -1100,7 +1154,7 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
         try:
             run_started_at = time.time()
             status.write(f"Translating {len(translatable_blocks)} Japanese block(s) in {batch_count} remaining batch(es)...")
-            translations, all_hits = translate_blocks_batch(
+            translations, all_hits, token_usage = translate_blocks_batch(
                 blocks,
                 glossary,
                 checkpoint_path=progress_path,
@@ -1130,6 +1184,7 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
                 f"Translated {len(translatable_blocks)}/{len(translatable_blocks)} Japanese block(s). "
                 f"Total time {format_duration(total_elapsed)}. "
                 f"Avg {avg_per_block:.2f}s/block, {format_duration(avg_per_batch)}/batch. "
+                f"{token_usage.display()} "
                 "Download is ready."
             )
         except Exception as exc:
