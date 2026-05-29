@@ -1088,6 +1088,7 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
             )
 
         try:
+            run_started_at = time.time()
             status.write(f"Translating {len(translatable_blocks)} Japanese block(s) in {batch_count} remaining batch(es)...")
             translations, all_hits = translate_blocks_batch(
                 blocks,
@@ -1112,8 +1113,13 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
             ]
             st.session_state["translated_document_terms"] = all_hits
             status.success("Translation complete.")
+            total_elapsed = time.time() - run_started_at
+            avg_per_block = total_elapsed / max(len(translatable_blocks) - saved_count, 1)
+            avg_per_batch = total_elapsed / max(batch_count, 1)
             metrics.write(
                 f"Translated {len(translatable_blocks)}/{len(translatable_blocks)} Japanese block(s). "
+                f"Total time {format_duration(total_elapsed)}. "
+                f"Avg {avg_per_block:.2f}s/block, {format_duration(avg_per_batch)}/batch. "
                 "Download is ready."
             )
         except Exception as exc:
