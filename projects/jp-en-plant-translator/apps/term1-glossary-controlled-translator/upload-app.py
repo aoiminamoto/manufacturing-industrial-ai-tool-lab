@@ -32,8 +32,9 @@ DEFAULT_GLOSSARY_PATHS = [
     BASE_DIR / "glossary.csv",
 ]
 DEFAULT_MODEL = "gpt-4.1-mini"
-DOCUMENT_BATCH_SIZE = 75
+DOCUMENT_BATCH_SIZE = 120
 MAX_TRANSLATION_RETRIES = 3
+OPENAI_TIMEOUT_SECONDS = 120
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PROGRESS_DIR = BASE_DIR / ".term1_progress"
 USAGE_COUNT_PATH = BASE_DIR / ".term1_usage_count.json"
@@ -390,6 +391,13 @@ def openai_model() -> str:
     return os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
 
 
+def openai_timeout_seconds() -> float:
+    try:
+        return float(os.getenv("OPENAI_TIMEOUT_SECONDS", OPENAI_TIMEOUT_SECONDS))
+    except ValueError:
+        return float(OPENAI_TIMEOUT_SECONDS)
+
+
 def format_translation_error(exc: Exception) -> str:
     if isinstance(exc, APIConnectionError):
         return (
@@ -411,6 +419,7 @@ def translate_text(source_text: str, hits: list[TermHit], protected_codes: list[
         model=openai_model(),
         input=build_prompt(source_text, hits, protected_codes),
         temperature=0.1,
+        timeout=openai_timeout_seconds(),
     )
     return response.output_text.strip()
 
@@ -526,6 +535,7 @@ def translate_blocks_batch(
                     model=openai_model(),
                     input=build_batch_prompt(items),
                     temperature=0.1,
+                    timeout=openai_timeout_seconds(),
                 )
                 parsed = parse_batch_translation(response.output_text.strip(), [item[0] for item in items])
                 missing_ids = [item[0] for item in items if item[0] not in parsed]
