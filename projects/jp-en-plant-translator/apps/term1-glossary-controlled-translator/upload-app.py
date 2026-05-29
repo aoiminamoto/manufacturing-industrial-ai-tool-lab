@@ -1,3 +1,4 @@
+import csv
 import io
 import hashlib
 import json
@@ -548,34 +549,40 @@ def write_text_file(blocks: list[TextBlock], translations: dict[str, str]) -> by
     return "\n\n".join(lines).encode("utf-8-sig")
 
 
-def read_csv_document(raw: bytes) -> pd.DataFrame:
+def read_csv_rows(raw: bytes) -> list[list[str]]:
     for encoding in ("utf-8-sig", "utf-8", "cp932", "shift_jis", "cp1252"):
         try:
-            return pd.read_csv(io.BytesIO(raw), encoding=encoding, dtype=str, keep_default_na=False)
+            text = raw.decode(encoding)
+            return [row for row in csv.reader(io.StringIO(text))]
         except UnicodeDecodeError:
             continue
-    return pd.read_csv(io.BytesIO(raw), encoding="utf-8", dtype=str, keep_default_na=False, encoding_errors="replace")
+    text = raw.decode("utf-8", errors="replace")
+    return [row for row in csv.reader(io.StringIO(text))]
 
 
 def extract_csv_blocks(raw: bytes) -> list[TextBlock]:
-    df = read_csv_document(raw)
+    rows = read_csv_rows(raw)
     blocks = []
-    for row_index, row in df.iterrows():
-        for column in df.columns:
-            value = clean_text(row[column])
+    for row_index, row in enumerate(rows):
+        for column_index, cell in enumerate(row):
+            value = clean_text(cell)
             if value:
-                blocks.append(TextBlock(location=f"csv:{row_index}:{column}", text=value))
+                blocks.append(TextBlock(location=f"csv:{row_index}:{column_index}", text=value))
     return blocks
 
 
 def build_translated_csv(raw: bytes, translations: dict[str, str]) -> bytes:
-    df = read_csv_document(raw)
-    for row_index, row in df.iterrows():
-        for column in df.columns:
-            key = f"csv:{row_index}:{column}"
+    rows = read_csv_rows(raw)
+    for row_index, row in enumerate(rows):
+        for column_index, _ in enumerate(row):
+            key = f"csv:{row_index}:{column_index}"
             if key in translations:
-                df.at[row_index, column] = translations[key]
-    return df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                row[column_index] = translations[key]
+
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerows(rows)
+    return output.getvalue().encode("utf-8-sig")
 
 
 def extract_text_blocks(raw: bytes, file_name: str) -> list[TextBlock]:
