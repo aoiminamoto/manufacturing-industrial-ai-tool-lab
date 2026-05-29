@@ -7,6 +7,7 @@ import re
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ DEFAULT_GLOSSARY_PATHS = [
 ]
 DEFAULT_MODEL = "gpt-4.1-mini"
 DOCUMENT_BATCH_SIZE = 120
+MAX_PARALLEL_BATCHES = 3
 MAX_TRANSLATION_RETRIES = 3
 OPENAI_TIMEOUT_SECONDS = 120
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -418,6 +420,14 @@ def openai_timeout_seconds() -> float:
         return float(OPENAI_TIMEOUT_SECONDS)
 
 
+def max_parallel_batches() -> int:
+    try:
+        value = int(os.getenv("MAX_PARALLEL_BATCHES", MAX_PARALLEL_BATCHES))
+    except ValueError:
+        value = MAX_PARALLEL_BATCHES
+    return max(value, 1)
+
+
 def response_token_usage(response) -> TokenUsage:
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -541,13 +551,56 @@ def parse_batch_translation(output_text: str, item_ids: list[int]) -> dict[int, 
     return translations
 
 
+def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
+    client = openai_client()
+    items = []
+    chunk_hits = []
+
+    for offset, block in enumerate(chunk, start=1):
+        glossary_applied_text, hits = apply_glossary_to_source(block.text, glossary)
+        protected_codes = find_protected_codes(block.text)
+        items.append((offset, glossary_applied_text, hits, protected_codes))
+        chunk_hits.extend(hits)
+
+    parsed = {}
+    token_usage = TokenUsage()
+    last_error = None
+    for attempt in range(1, MAX_TRANSLATION_RETRIES + 1):
+        try:
+            response = client.responses.create(
+                model=openai_model(),
+                input=build_batch_prompt(items),
+                temperature=0.1,
+                timeout=openai_timeout_seconds(),
+            )
+            token_usage.add(response_token_usage(response))
+            parsed = parse_batch_translation(response.output_text.strip(), [item[0] for item in items])
+            missing_ids = [item[0] for item in items if item[0] not in parsed]
+            if missing_ids:
+                raise ValueError(f"Translation response missed block marker(s): {missing_ids}")
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt == MAX_TRANSLATION_RETRIES:
+                raise
+            time.sleep(5 * attempt)
+
+    if not parsed and last_error:
+        raise last_error
+
+    chunk_translations = {}
+    for offset, block in enumerate(chunk, start=1):
+        chunk_translations[block.location] = parsed[offset]
+
+    return chunk_translations, chunk_hits, token_usage
+
+
 def translate_blocks_batch(
     blocks: list[TextBlock],
     glossary: pd.DataFrame,
     checkpoint_path=None,
     progress_callback=None,
 ) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
-    client = openai_client()
     translations = load_checkpoint(checkpoint_path) if checkpoint_path else {}
     translatable_blocks = [block for block in blocks if should_translate(block.text)]
     pending_blocks = [block for block in translatable_blocks if block.location not in translations]
@@ -556,6 +609,7 @@ def translate_blocks_batch(
     started_at = time.time()
     completed_at_start = len(translatable_blocks) - len(pending_blocks)
     total_batches = (len(pending_blocks) + DOCUMENT_BATCH_SIZE - 1) // DOCUMENT_BATCH_SIZE
+    parallel_batches = min(max_parallel_batches(), max(total_batches, 1))
 
     if progress_callback:
         progress_callback(
@@ -567,66 +621,41 @@ def translate_blocks_batch(
             "Resuming from saved progress." if completed_at_start else "Starting translation.",
         )
 
-    for start in range(0, len(pending_blocks), DOCUMENT_BATCH_SIZE):
-        chunk = pending_blocks[start:start + DOCUMENT_BATCH_SIZE]
-        items = []
+    chunks = [
+        pending_blocks[start:start + DOCUMENT_BATCH_SIZE]
+        for start in range(0, len(pending_blocks), DOCUMENT_BATCH_SIZE)
+    ]
+    completed_batches = 0
+    completed_blocks = completed_at_start
 
-        for offset, block in enumerate(chunk, start=1):
-            glossary_applied_text, hits = apply_glossary_to_source(block.text, glossary)
-            protected_codes = find_protected_codes(block.text)
-            items.append((offset, glossary_applied_text, hits, protected_codes))
-            all_hits.extend(hits)
+    if chunks:
+        with ThreadPoolExecutor(max_workers=parallel_batches) as executor:
+            future_to_chunk = {
+                executor.submit(translate_batch_chunk, chunk, glossary): chunk
+                for chunk in chunks
+            }
 
-        parsed = {}
-        last_error = None
-        for attempt in range(1, MAX_TRANSLATION_RETRIES + 1):
-            try:
-                response = client.responses.create(
-                    model=openai_model(),
-                    input=build_batch_prompt(items),
-                    temperature=0.1,
-                    timeout=openai_timeout_seconds(),
-                )
-                token_usage.add(response_token_usage(response))
-                parsed = parse_batch_translation(response.output_text.strip(), [item[0] for item in items])
-                missing_ids = [item[0] for item in items if item[0] not in parsed]
-                if missing_ids:
-                    raise ValueError(f"Translation response missed block marker(s): {missing_ids}")
-                break
-            except Exception as exc:
-                last_error = exc
-                if attempt == MAX_TRANSLATION_RETRIES:
-                    raise
+            for future in as_completed(future_to_chunk):
+                chunk = future_to_chunk[future]
+                chunk_translations, chunk_hits, chunk_token_usage = future.result()
+                translations.update(chunk_translations)
+                all_hits.extend(chunk_hits)
+                token_usage.add(chunk_token_usage)
+                completed_batches += 1
+                completed_blocks += len(chunk)
+
+                if checkpoint_path:
+                    save_checkpoint(checkpoint_path, translations)
+
                 if progress_callback:
                     progress_callback(
-                        completed_at_start + start,
+                        min(completed_blocks, len(translatable_blocks)),
                         len(translatable_blocks),
-                        start // DOCUMENT_BATCH_SIZE,
+                        completed_batches,
                         total_batches,
                         time.time() - started_at,
-                        f"Batch retry {attempt}/{MAX_TRANSLATION_RETRIES} after: {format_translation_error(exc)}",
+                        f"Saved batch progress. Running up to {parallel_batches} batch(es) in parallel.",
                     )
-                time.sleep(5 * attempt)
-
-        if not parsed and last_error:
-            raise last_error
-
-        for offset, block in enumerate(chunk, start=1):
-            translations[block.location] = parsed[offset]
-
-        if checkpoint_path:
-            save_checkpoint(checkpoint_path, translations)
-
-        if progress_callback:
-            completed = min(completed_at_start + start + len(chunk), len(translatable_blocks))
-            progress_callback(
-                completed,
-                len(translatable_blocks),
-                (start // DOCUMENT_BATCH_SIZE) + 1,
-                total_batches,
-                time.time() - started_at,
-                "Saved batch progress.",
-            )
 
     return translations, all_hits, token_usage
 
@@ -1068,7 +1097,8 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
         f"{len(translatable_blocks)} need Japanese translation. "
         f"{saved_count} already saved. "
         f"{batch_count} batch(es) remaining. "
-        f"Batch size: {DOCUMENT_BATCH_SIZE}."
+        f"Batch size: {DOCUMENT_BATCH_SIZE}. "
+        f"Parallel batches: {max_parallel_batches()}."
     )
 
     if len(blocks) >= 1000:
@@ -1083,7 +1113,8 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
     metrics.write(
         f"Progress: {saved_count}/{len(translatable_blocks)} Japanese block(s) saved. "
         f"{batch_count} batch(es) remaining. "
-        f"Batch size: {DOCUMENT_BATCH_SIZE}."
+        f"Batch size: {DOCUMENT_BATCH_SIZE}. "
+        f"Parallel batches: {max_parallel_batches()}."
     )
 
     preview_rows = [{"Location": block.location, "Japanese Text": block.text[:300]} for block in blocks[:20]]

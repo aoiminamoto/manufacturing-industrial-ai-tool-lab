@@ -10,6 +10,7 @@ Runnable Streamlit implementation of the JP-EN Plant Translator concept.
 - Skips non-Japanese Excel cells to reduce cost and runtime
 - Saves translation progress by batch for large files
 - Resumes after network or API interruption
+- Runs controlled parallel batch translation for faster large-file processing
 - Shows progress, batch count, elapsed time, and ETA
 - Counts app sessions locally in the sidebar
 
