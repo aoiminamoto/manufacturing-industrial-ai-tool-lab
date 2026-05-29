@@ -1011,6 +1011,17 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
     if len(blocks) >= 1000:
         st.info("Large File Mode is active: the app skips non-Japanese cells and saves progress after every batch.")
 
+    initial_ratio = 1.0 if not translatable_blocks else min(saved_count / len(translatable_blocks), 1.0)
+    progress = st.progress(initial_ratio)
+    status = st.empty()
+    metrics = st.empty()
+    if saved_count:
+        status.write("Saved progress found. Click Translate Document to resume.")
+    metrics.write(
+        f"Progress: {saved_count}/{len(translatable_blocks)} Japanese block(s) saved. "
+        f"{batch_count} batch(es) remaining."
+    )
+
     preview_rows = [{"Location": block.location, "Japanese Text": block.text[:300]} for block in blocks[:20]]
     st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
 
@@ -1050,9 +1061,8 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
             st.session_state["translated_document_terms"] = []
             return
 
-        progress = st.progress(0)
-        status = st.empty()
-        metrics = st.empty()
+        progress.progress(initial_ratio)
+        status.write("Preparing translation...")
 
         def update_progress(done, total, done_batches, total_batches, elapsed, message):
             ratio = 1.0 if total == 0 else min(done / total, 1.0)
