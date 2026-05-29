@@ -883,8 +883,15 @@ def render_text_translation(glossary: pd.DataFrame) -> None:
             st.warning("Please paste Japanese text first.")
             return
 
+        progress = st.progress(0)
+        status = st.empty()
+
         try:
+            status.write("Preparing glossary terms and protected codes...")
+            progress.progress(0.2)
             translated_text, hits = translate_block(jp_text, glossary)
+            progress.progress(1.0)
+            status.success("Translation complete.")
             st.subheader("English Translation")
             st.write(translated_text)
 
@@ -901,6 +908,7 @@ def render_text_translation(glossary: pd.DataFrame) -> None:
             else:
                 st.info("No glossary terms were detected in this text.")
         except Exception as exc:
+            status.error("Translation failed.")
             st.error(f"Translation failed: {format_translation_error(exc)}")
 
 
