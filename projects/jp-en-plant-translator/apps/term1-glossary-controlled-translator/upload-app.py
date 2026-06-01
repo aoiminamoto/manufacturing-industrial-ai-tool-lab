@@ -640,6 +640,19 @@ def apply_glossary_to_source(text: str, glossary: pd.DataFrame) -> tuple[str, li
     return translated_source, hits
 
 
+def exact_controlled_term_match(text: str, glossary: pd.DataFrame) -> tuple[str | None, list[TermHit]]:
+    source = clean_text(text)
+    if not source:
+        return None, []
+
+    for _, row in glossary.iterrows():
+        jp = clean_text(row["JP"])
+        en = clean_text(row["EN"])
+        if source == jp:
+            return en, [TermHit(jp=jp, en=en, count=1)]
+    return None, []
+
+
 def find_protected_codes(text: str) -> list[str]:
     return sorted(set(PROTECTED_PATTERN.findall(text)))
 
@@ -817,6 +830,10 @@ def translate_text(source_text: str, hits: list[TermHit], protected_codes: list[
 
 
 def translate_block(text: str, glossary: pd.DataFrame, translation_mode: str) -> tuple[str, list[TermHit], TokenUsage]:
+    exact_translation, exact_hits = exact_controlled_term_match(text, glossary)
+    if exact_translation is not None:
+        return post_process_translation(exact_translation, translation_mode), exact_hits, TokenUsage()
+
     glossary_applied_text, hits = apply_glossary_to_source(text, glossary)
     protected_codes = find_protected_codes(text)
     translation, token_usage = translate_text(glossary_applied_text, hits, protected_codes, translation_mode)
@@ -886,11 +903,17 @@ def parse_batch_translation(output_text: str, item_ids: list[int]) -> dict[int, 
 
 
 def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, translation_mode: str) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
-    client = openai_client()
     items = []
     chunk_hits = []
+    direct_translations = {}
 
     for offset, block in enumerate(chunk, start=1):
+        exact_translation, exact_hits = exact_controlled_term_match(block.text, glossary)
+        if exact_translation is not None:
+            direct_translations[block.location] = post_process_translation(exact_translation, translation_mode)
+            chunk_hits.extend(exact_hits)
+            continue
+
         glossary_applied_text, hits = apply_glossary_to_source(block.text, glossary)
         protected_codes = find_protected_codes(block.text)
         items.append((offset, glossary_applied_text, hits, protected_codes))
@@ -899,31 +922,35 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, transl
     parsed = {}
     token_usage = TokenUsage()
     last_error = None
-    for attempt in range(1, MAX_TRANSLATION_RETRIES + 1):
-        try:
-            response = client.responses.create(
-                model=openai_model(),
-                input=build_batch_prompt(items, translation_mode),
-                temperature=0.1,
-                timeout=openai_timeout_seconds(),
-            )
-            token_usage.add(response_token_usage(response))
-            parsed = parse_batch_translation(response.output_text.strip(), [item[0] for item in items])
-            missing_ids = [item[0] for item in items if item[0] not in parsed]
-            if missing_ids:
-                raise ValueError(f"Translation response missed block marker(s): {missing_ids}")
-            break
-        except Exception as exc:
-            last_error = exc
-            if attempt == MAX_TRANSLATION_RETRIES:
-                raise
-            time.sleep(5 * attempt)
+    if items:
+        client = openai_client()
+        for attempt in range(1, MAX_TRANSLATION_RETRIES + 1):
+            try:
+                response = client.responses.create(
+                    model=openai_model(),
+                    input=build_batch_prompt(items, translation_mode),
+                    temperature=0.1,
+                    timeout=openai_timeout_seconds(),
+                )
+                token_usage.add(response_token_usage(response))
+                parsed = parse_batch_translation(response.output_text.strip(), [item[0] for item in items])
+                missing_ids = [item[0] for item in items if item[0] not in parsed]
+                if missing_ids:
+                    raise ValueError(f"Translation response missed block marker(s): {missing_ids}")
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt == MAX_TRANSLATION_RETRIES:
+                    raise
+                time.sleep(5 * attempt)
 
-    if not parsed and last_error:
+    if items and not parsed and last_error:
         raise last_error
 
-    chunk_translations = {}
+    chunk_translations = dict(direct_translations)
     for offset, block in enumerate(chunk, start=1):
+        if block.location in chunk_translations:
+            continue
         chunk_translations[block.location] = post_process_translation(parsed[offset], translation_mode)
 
     return chunk_translations, chunk_hits, token_usage
@@ -1555,6 +1582,8 @@ def render_text_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> 
             progress.progress(1.0)
             status.success("Translation complete.")
             st.caption(token_usage.display())
+            if token_usage.total_tokens == 0 and hits:
+                st.success("Translated by controlled rule. OpenAI API was not called.")
             st.subheader("English Translation")
             st.write(translated_text)
 
