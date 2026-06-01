@@ -42,6 +42,9 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PROGRESS_DIR = BASE_DIR / ".term1_progress"
 USAGE_COUNT_PATH = BASE_DIR / ".term1_usage_count.json"
 JOB_DB_PATH = BASE_DIR / ".term1_jobs.db"
+GENERAL_TRANSLATION_MODE = "General Plant Translation"
+PLC_TRANSLATION_MODE = "PLC/SPLC Comment Standardization"
+TRANSLATION_MODES = [PLC_TRANSLATION_MODE, GENERAL_TRANSLATION_MODE]
 PROTECTED_PATTERN = re.compile(
     r"\b(?:[A-Z]{1,6}[-_]?\d{1,6}[A-Z]?|\d+[A-Z]{1,4}|[XYMDSZR][0-9]{1,5}|[A-Z]{2,}-[A-Z0-9-]+)\b"
 )
@@ -147,8 +150,9 @@ def document_fingerprint(file_name: str, raw: bytes) -> str:
     return f"{safe_name}_{len(raw)}_{digest}"
 
 
-def checkpoint_path_for(file_name: str, raw: bytes) -> Path:
-    return PROGRESS_DIR / f"{document_fingerprint(file_name, raw)}.json"
+def checkpoint_path_for(file_name: str, raw: bytes, translation_mode: str = GENERAL_TRANSLATION_MODE) -> Path:
+    mode_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", translation_mode).strip("_").lower()
+    return PROGRESS_DIR / f"{document_fingerprint(file_name, raw)}_{mode_key}.json"
 
 
 def load_checkpoint(path: Path) -> dict[str, str]:
@@ -239,9 +243,24 @@ def init_job_store() -> None:
             )
             """
         )
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(translation_jobs)").fetchall()
+        }
+        if "translation_mode" not in columns:
+            conn.execute(
+                "ALTER TABLE translation_jobs ADD COLUMN translation_mode TEXT DEFAULT ''"
+            )
 
 
-def create_translation_job(file_name: str, file_size_bytes: int, total_blocks: int, translatable_blocks: int, total_batches: int) -> str:
+def create_translation_job(
+    file_name: str,
+    file_size_bytes: int,
+    total_blocks: int,
+    translatable_blocks: int,
+    total_batches: int,
+    translation_mode: str = GENERAL_TRANSLATION_MODE,
+) -> str:
     init_job_store()
     job_id = f"job_{int(time.time())}_{hashlib.sha256(f'{file_name}:{file_size_bytes}:{time.time()}'.encode()).hexdigest()[:8]}"
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -249,16 +268,17 @@ def create_translation_job(file_name: str, file_size_bytes: int, total_blocks: i
         conn.execute(
             """
             INSERT INTO translation_jobs (
-                job_id, file_name, file_size_bytes, status, total_blocks,
+                job_id, file_name, file_size_bytes, translation_mode, status, total_blocks,
                 translatable_blocks, completed_blocks, total_batches,
                 completed_batches, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
                 file_name,
                 file_size_bytes,
+                translation_mode,
                 "running",
                 total_blocks,
                 translatable_blocks,
@@ -305,6 +325,7 @@ def recent_translation_jobs(limit: int = 10) -> pd.DataFrame:
             SELECT
                 job_id AS "Job ID",
                 file_name AS "File",
+                translation_mode AS "Mode",
                 status AS "Status",
                 completed_blocks || '/' || translatable_blocks AS "Blocks",
                 completed_batches || '/' || total_batches AS "Batches",
@@ -329,6 +350,7 @@ def translation_job_detail(job_id: str) -> pd.DataFrame:
                 job_id,
                 file_name,
                 file_size_bytes,
+                translation_mode,
                 status,
                 total_blocks,
                 translatable_blocks,
@@ -501,23 +523,46 @@ def find_protected_codes(text: str) -> list[str]:
     return sorted(set(PROTECTED_PATTERN.findall(text)))
 
 
-def build_prompt(source_text: str, hits: list[TermHit], protected_codes: list[str]) -> str:
+def plc_mode_rules() -> str:
+    return """
+PLC/SPLC comment mode:
+1. Treat the source as PLC/SPLC device comments, HMI labels, alarm labels, or control logic comments, not normal prose.
+2. Output short engineering labels only. Avoid full sentences unless the source is clearly a sentence.
+3. Do not string together multiple synonyms. Never output lists like "poor, defective, NG, inoperative".
+4. Choose one stable plant-control term for each Japanese concept. Prefer concise PLC terms such as ON, OFF, OK, NG, Present, Absent, Complete, Confirm, Request, Command, Auto, Manual, Standby, Error.
+5. Preserve PLC addresses, device IDs, robot names, station names, prefixes, symbols, arrows, brackets, and separators exactly.
+6. Keep repeated Japanese patterns translated with repeated English patterns.
+7. If a company glossary term is provided, it overrides the default PLC wording.
+""".strip()
+
+
+def general_mode_rules() -> str:
+    return """
+General plant translation mode:
+1. Translate into clear, natural plant-floor engineering English for manufacturing users.
+2. Use concise plant-floor English suitable for controls, seibi, production, and engineering users.
+3. Preserve line breaks and list structure when useful.
+""".strip()
+
+
+def build_prompt(source_text: str, hits: list[TermHit], protected_codes: list[str], translation_mode: str) -> str:
     terms = "\n".join(f"{hit.jp} = {hit.en}" for hit in hits)
     codes = ", ".join(protected_codes) if protected_codes else "None detected"
+    mode_rules = plc_mode_rules() if translation_mode == PLC_TRANSLATION_MODE else general_mode_rules()
 
     return f"""
 You are a professional Japanese-to-English translator for a battery manufacturing plant.
 
-Translate the source text into clear, natural plant-floor engineering English for manufacturing users.
+Translation mode: {translation_mode}
+
+{mode_rules}
 
 Mandatory rules:
 1. Apply approved company glossary terms exactly as written. Do not paraphrase approved terms.
 2. Preserve PLC addresses, device IDs, model names, station IDs, alarm codes, part numbers, and equipment codes exactly.
-3. Use concise plant-floor English suitable for controls, seibi, production, and engineering users.
-4. Do not invent missing information, causes, actions, measurements, or context that is not in the source.
-5. If the source is ambiguous, translate only the meaning that is present and keep the wording neutral.
-6. Preserve line breaks and list structure when useful.
-7. Output only the English translation. Do not add explanations, notes, or commentary.
+3. Do not invent missing information, causes, actions, measurements, or context that is not in the source.
+4. If the source is ambiguous, translate only the meaning that is present and keep the wording neutral.
+5. Output only the English translation. Do not add explanations, notes, or commentary.
 
 Company terminology detected in the source:
 {terms if terms else "None"}
@@ -612,25 +657,25 @@ def format_translation_error(exc: Exception) -> str:
     return str(exc)
 
 
-def translate_text(source_text: str, hits: list[TermHit], protected_codes: list[str]) -> tuple[str, TokenUsage]:
+def translate_text(source_text: str, hits: list[TermHit], protected_codes: list[str], translation_mode: str) -> tuple[str, TokenUsage]:
     client = openai_client()
     response = client.responses.create(
         model=openai_model(),
-        input=build_prompt(source_text, hits, protected_codes),
+        input=build_prompt(source_text, hits, protected_codes, translation_mode),
         temperature=0.1,
         timeout=openai_timeout_seconds(),
     )
     return response.output_text.strip(), response_token_usage(response)
 
 
-def translate_block(text: str, glossary: pd.DataFrame) -> tuple[str, list[TermHit], TokenUsage]:
+def translate_block(text: str, glossary: pd.DataFrame, translation_mode: str) -> tuple[str, list[TermHit], TokenUsage]:
     glossary_applied_text, hits = apply_glossary_to_source(text, glossary)
     protected_codes = find_protected_codes(text)
-    translation, token_usage = translate_text(glossary_applied_text, hits, protected_codes)
+    translation, token_usage = translate_text(glossary_applied_text, hits, protected_codes, translation_mode)
     return translation, hits, token_usage
 
 
-def build_batch_prompt(items: list[tuple[int, str, list[TermHit], list[str]]]) -> str:
+def build_batch_prompt(items: list[tuple[int, str, list[TermHit], list[str]]], translation_mode: str) -> str:
     item_text = "\n\n".join(
         "\n".join(
             [
@@ -649,20 +694,21 @@ def build_batch_prompt(items: list[tuple[int, str, list[TermHit], list[str]]]) -
 
     unique_terms = "\n".join(sorted(set(terms))) or "None"
     unique_codes = ", ".join(sorted(set(codes))) if codes else "None detected"
+    mode_rules = plc_mode_rules() if translation_mode == PLC_TRANSLATION_MODE else general_mode_rules()
 
     return f"""
 You are a professional Japanese-to-English translator for a battery manufacturing plant.
 
-Translate each block into clear, natural plant-floor engineering English for manufacturing users.
+Translation mode: {translation_mode}
+
+{mode_rules}
 
 Mandatory rules:
 1. Apply approved company glossary terms exactly as written. Do not paraphrase approved terms.
 2. Preserve PLC addresses, device IDs, model names, station IDs, alarm codes, part numbers, and equipment codes exactly.
-3. Use concise plant-floor English suitable for controls, seibi, production, and engineering users.
-4. Do not invent missing information, causes, actions, measurements, or context that is not in the source.
-5. If the source is ambiguous, translate only the meaning that is present and keep the wording neutral.
-6. Preserve line breaks inside each block when useful.
-7. Return each translated block using the same markers and do not add explanations, notes, or commentary:
+3. Do not invent missing information, causes, actions, measurements, or context that is not in the source.
+4. If the source is ambiguous, translate only the meaning that is present and keep the wording neutral.
+5. Return each translated block using the same markers and do not add explanations, notes, or commentary:
 [BLOCK 1]
 English translation
 [/BLOCK 1]
@@ -691,7 +737,7 @@ def parse_batch_translation(output_text: str, item_ids: list[int]) -> dict[int, 
     return translations
 
 
-def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
+def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, translation_mode: str) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
     client = openai_client()
     items = []
     chunk_hits = []
@@ -709,7 +755,7 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame) -> tup
         try:
             response = client.responses.create(
                 model=openai_model(),
-                input=build_batch_prompt(items),
+                input=build_batch_prompt(items, translation_mode),
                 temperature=0.1,
                 timeout=openai_timeout_seconds(),
             )
@@ -738,6 +784,7 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame) -> tup
 def translate_blocks_batch(
     blocks: list[TextBlock],
     glossary: pd.DataFrame,
+    translation_mode: str,
     checkpoint_path=None,
     progress_callback=None,
 ) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
@@ -771,7 +818,7 @@ def translate_blocks_batch(
     if chunks:
         with ThreadPoolExecutor(max_workers=parallel_batches) as executor:
             future_to_chunk = {
-                executor.submit(translate_batch_chunk, chunk, glossary): chunk
+                executor.submit(translate_batch_chunk, chunk, glossary, translation_mode): chunk
                 for chunk in chunks
             }
 
@@ -1186,6 +1233,13 @@ def apply_compact_style() -> None:
 
 
 def render_text_translation(glossary: pd.DataFrame) -> None:
+    translation_mode = st.radio(
+        "Translation mode",
+        TRANSLATION_MODES,
+        horizontal=True,
+        help="PLC/SPLC mode standardizes short control comments. General mode is for normal plant text.",
+        key="text_translation_mode",
+    )
     jp_text = st.text_area(
         "Paste Japanese text",
         height=220,
@@ -1203,7 +1257,7 @@ def render_text_translation(glossary: pd.DataFrame) -> None:
         try:
             status.write("Preparing glossary terms and protected codes...")
             progress.progress(0.2)
-            translated_text, hits, token_usage = translate_block(jp_text, glossary)
+            translated_text, hits, token_usage = translate_block(jp_text, glossary, translation_mode)
             progress.progress(1.0)
             status.success("Translation complete.")
             st.caption(token_usage.display())
@@ -1229,6 +1283,13 @@ def render_text_translation(glossary: pd.DataFrame) -> None:
 
 def render_document_translation(glossary: pd.DataFrame) -> None:
     st.info("Accepted document types: CSV (.csv), Text (.txt/.as), Word (.docx), and Excel (.xlsx/.xlsm). Large file safety limit: 50 MB.")
+    translation_mode = st.radio(
+        "Translation mode",
+        TRANSLATION_MODES,
+        horizontal=True,
+        help="Use PLC/SPLC mode for device comments and controls labels. Use General mode for normal plant documents.",
+        key="document_translation_mode",
+    )
     with st.expander("Recent Translation Jobs"):
         jobs = recent_translation_jobs()
         if jobs.empty:
@@ -1250,6 +1311,7 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
                         {"Field": "Job ID", "Value": job["job_id"]},
                         {"Field": "File", "Value": job["file_name"]},
                         {"Field": "File size", "Value": f"{job['file_size_bytes']:,} bytes"},
+                        {"Field": "Mode", "Value": job["translation_mode"] or "Not recorded"},
                         {"Field": "Status", "Value": job["status"]},
                         {"Field": "Blocks", "Value": f"{job['completed_blocks']}/{job['translatable_blocks']} translated ({job['total_blocks']} total text blocks)"},
                         {"Field": "Batches", "Value": f"{job['completed_batches']}/{job['total_batches']}"},
@@ -1276,8 +1338,8 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
         st.warning("This document is larger than the 50 MB safety limit. Please split the file or test with a smaller copy.")
         return
 
-    document_key = document_fingerprint(uploaded_document.name, raw_document)
-    progress_path = checkpoint_path_for(uploaded_document.name, raw_document)
+    document_key = f"{document_fingerprint(uploaded_document.name, raw_document)}::{translation_mode}"
+    progress_path = checkpoint_path_for(uploaded_document.name, raw_document, translation_mode)
     if st.session_state.get("translated_document_key") != document_key:
         st.session_state.pop("translated_document_bytes", None)
         st.session_state.pop("translated_document_name", None)
@@ -1356,7 +1418,7 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
             st.info("No Japanese text was found. Downloading the original document is enough.")
             translated_document = build_translated_document(raw_document, uploaded_document.name, {}, blocks)
             translated_name = output_file_name(uploaded_document.name)
-            job_id = create_translation_job(uploaded_document.name, len(raw_document), len(blocks), 0, 0)
+            job_id = create_translation_job(uploaded_document.name, len(raw_document), len(blocks), 0, 0, translation_mode)
             update_translation_job(
                 job_id,
                 status="completed",
@@ -1410,11 +1472,13 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
                 len(blocks),
                 len(translatable_blocks),
                 batch_count,
+                translation_mode,
             )
-            status.write(f"Translating {len(translatable_blocks)} Japanese block(s) in {batch_count} remaining batch(es)...")
+            status.write(f"Translating {len(translatable_blocks)} Japanese block(s) in {batch_count} remaining batch(es) using {translation_mode}...")
             translations, all_hits, token_usage = translate_blocks_batch(
                 blocks,
                 glossary,
+                translation_mode,
                 checkpoint_path=progress_path,
                 progress_callback=update_progress,
             )
