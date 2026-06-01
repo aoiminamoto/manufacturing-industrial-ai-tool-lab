@@ -45,6 +45,24 @@ JOB_DB_PATH = BASE_DIR / ".term1_jobs.db"
 GENERAL_TRANSLATION_MODE = "General Plant Translation"
 PLC_TRANSLATION_MODE = "PLC/SPLC Comment Standardization"
 TRANSLATION_MODES = [PLC_TRANSLATION_MODE, GENERAL_TRANSLATION_MODE]
+PLC_DUPLICATE_STATUS_WORDS = [
+    "ON",
+    "OFF",
+    "OK",
+    "NG",
+    "Mode",
+    "Error",
+    "Complete",
+    "Confirm",
+    "Request",
+    "Command",
+    "Present",
+    "Absent",
+]
+PLC_SYNONYM_CLEANUPS = [
+    (re.compile(r"\bpoor,\s*defective,\s*NG,\s*inoperative\b", re.IGNORECASE), "NG"),
+    (re.compile(r"\bdefective,\s*NG\b", re.IGNORECASE), "NG"),
+]
 PROTECTED_PATTERN = re.compile(
     r"\b(?:[A-Z]{1,6}[-_]?\d{1,6}[A-Z]?|\d+[A-Z]{1,4}|[XYMDSZR][0-9]{1,5}|[A-Z]{2,}-[A-Z0-9-]+)\b"
 )
@@ -545,6 +563,33 @@ General plant translation mode:
 """.strip()
 
 
+def normalize_plc_translation_line(line: str) -> str:
+    normalized = re.sub(r"\s+", " ", line).strip()
+    for pattern, replacement in PLC_SYNONYM_CLEANUPS:
+        normalized = pattern.sub(replacement, normalized)
+
+    changed = True
+    while changed:
+        changed = False
+        for word in PLC_DUPLICATE_STATUS_WORDS:
+            pattern = re.compile(rf"\b({re.escape(word)})\s+\1\b", re.IGNORECASE)
+            normalized, count = pattern.subn(r"\1", normalized)
+            if count:
+                changed = True
+
+    return normalized
+
+
+def post_process_translation(output_text: str, translation_mode: str) -> str:
+    cleaned = output_text.strip()
+    if translation_mode != PLC_TRANSLATION_MODE:
+        return cleaned
+    return "\n".join(
+        normalize_plc_translation_line(line)
+        for line in cleaned.splitlines()
+    ).strip()
+
+
 def build_prompt(source_text: str, hits: list[TermHit], protected_codes: list[str], translation_mode: str) -> str:
     terms = "\n".join(f"{hit.jp} = {hit.en}" for hit in hits)
     codes = ", ".join(protected_codes) if protected_codes else "None detected"
@@ -665,7 +710,7 @@ def translate_text(source_text: str, hits: list[TermHit], protected_codes: list[
         temperature=0.1,
         timeout=openai_timeout_seconds(),
     )
-    return response.output_text.strip(), response_token_usage(response)
+    return post_process_translation(response.output_text, translation_mode), response_token_usage(response)
 
 
 def translate_block(text: str, glossary: pd.DataFrame, translation_mode: str) -> tuple[str, list[TermHit], TokenUsage]:
@@ -776,7 +821,7 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, transl
 
     chunk_translations = {}
     for offset, block in enumerate(chunk, start=1):
-        chunk_translations[block.location] = parsed[offset]
+        chunk_translations[block.location] = post_process_translation(parsed[offset], translation_mode)
 
     return chunk_translations, chunk_hits, token_usage
 
