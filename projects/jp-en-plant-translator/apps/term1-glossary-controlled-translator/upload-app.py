@@ -406,6 +406,10 @@ def is_safe_glossary_term(jp: str) -> bool:
     return True
 
 
+def empty_terms_dataframe() -> pd.DataFrame:
+    return pd.DataFrame(columns=["JP", "EN", "Note", "Category", "Owner"])
+
+
 def xlsx_to_dataframe(raw: bytes, sheet_index: int = 0) -> pd.DataFrame:
     ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
@@ -511,7 +515,7 @@ def read_rules_file(path: Path) -> pd.DataFrame:
 def read_plc_rules() -> pd.DataFrame:
     rule_path = next((path for path in DEFAULT_PLC_RULE_PATHS if path.exists()), None)
     if rule_path is None:
-        return pd.DataFrame(columns=["JP", "EN", "Note", "Category"])
+        return empty_terms_dataframe()
     return read_rules_file(rule_path)
 
 
@@ -533,11 +537,20 @@ def normalize_glossary(df: pd.DataFrame) -> pd.DataFrame:
         {
             "source japanese": "JP",
             "source": "JP",
+            "japanese source": "JP",
+            "japanese comment": "JP",
+            "source term": "JP",
+            "source text": "JP",
             "preferred english": "EN",
             "preferred abbreviation": "EN",
+            "preferred en": "EN",
+            "approved english": "EN",
+            "approved abbreviation": "EN",
             "abbreviation": "EN",
             "standard english": "EN",
+            "standard wording": "EN",
             "target": "EN",
+            "target english": "EN",
             "do not use": "Note",
         }
     )
@@ -563,9 +576,14 @@ def normalize_glossary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def normalize_plc_rules(df: pd.DataFrame) -> pd.DataFrame:
-    rules = normalize_glossary(df)
+    if df.empty and not set(df.columns).intersection({"JP", "EN", "Japanese", "English"}):
+        return empty_terms_dataframe()
+    try:
+        rules = normalize_glossary(df)
+    except Exception:
+        return empty_terms_dataframe()
     if rules.empty:
-        return rules
+        return empty_terms_dataframe()
     rules = rules.copy()
     rules["Category"] = "PLC/SPLC Rule"
     return rules
@@ -1770,11 +1788,15 @@ except Exception as exc:
     st.error(f"Glossary error: {exc}")
     st.stop()
 
+plc_rules_error = ""
 try:
     plc_rules = normalize_plc_rules(read_plc_rules())
 except Exception as exc:
-    st.error(f"PLC rule file error: {exc}")
-    st.stop()
+    plc_rules_error = str(exc)
+    plc_rules = empty_terms_dataframe()
+
+if plc_rules_error:
+    st.warning(f"PLC rule file could not be loaded, so the app will continue without PLC abbreviation rules: {plc_rules_error}")
 
 text_tab, document_tab = st.tabs(["Text Translation", "Document Translation"])
 
