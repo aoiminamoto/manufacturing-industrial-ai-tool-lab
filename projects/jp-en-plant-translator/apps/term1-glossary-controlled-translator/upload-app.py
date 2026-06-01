@@ -887,6 +887,10 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, transl
     return chunk_translations, chunk_hits, token_usage
 
 
+def translation_memory_key(text: str) -> str:
+    return clean_text(text)
+
+
 def translate_blocks_batch(
     blocks: list[TextBlock],
     glossary: pd.DataFrame,
@@ -896,11 +900,33 @@ def translate_blocks_batch(
 ) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
     translations = load_checkpoint(checkpoint_path) if checkpoint_path else {}
     translatable_blocks = [block for block in blocks if should_translate(block.text)]
-    pending_blocks = [block for block in translatable_blocks if block.location not in translations]
+    source_memory = {}
+    for block in translatable_blocks:
+        if block.location in translations:
+            source_memory.setdefault(translation_memory_key(block.text), translations[block.location])
+
+    for block in translatable_blocks:
+        key = translation_memory_key(block.text)
+        if block.location not in translations and key in source_memory:
+            translations[block.location] = source_memory[key]
+
+    pending_by_key = {}
+    duplicate_locations_by_key = {}
+    for block in translatable_blocks:
+        if block.location in translations:
+            continue
+        key = translation_memory_key(block.text)
+        if key not in pending_by_key:
+            pending_by_key[key] = block
+            duplicate_locations_by_key[key] = []
+        duplicate_locations_by_key[key].append(block.location)
+
+    pending_blocks = list(pending_by_key.values())
     all_hits = []
     token_usage = TokenUsage()
     started_at = time.time()
-    completed_at_start = len(translatable_blocks) - len(pending_blocks)
+    pending_location_count = sum(len(locations) for locations in duplicate_locations_by_key.values())
+    completed_at_start = len(translatable_blocks) - pending_location_count
     total_batches = (len(pending_blocks) + DOCUMENT_BATCH_SIZE - 1) // DOCUMENT_BATCH_SIZE
     parallel_batches = min(max_parallel_batches(), max(total_batches, 1))
 
@@ -911,7 +937,7 @@ def translate_blocks_batch(
             0,
             total_batches,
             0,
-            "Resuming from saved progress." if completed_at_start else "Starting translation.",
+            "Resuming from saved progress and translation memory." if completed_at_start else "Starting translation.",
         )
 
     chunks = [
@@ -931,11 +957,19 @@ def translate_blocks_batch(
             for future in as_completed(future_to_chunk):
                 chunk = future_to_chunk[future]
                 chunk_translations, chunk_hits, chunk_token_usage = future.result()
-                translations.update(chunk_translations)
+                expanded_translations = {}
+                for block in chunk:
+                    key = translation_memory_key(block.text)
+                    translated_text = chunk_translations[block.location]
+                    source_memory[key] = translated_text
+                    for location in duplicate_locations_by_key.get(key, [block.location]):
+                        expanded_translations[location] = translated_text
+
+                translations.update(expanded_translations)
                 all_hits.extend(chunk_hits)
                 token_usage.add(chunk_token_usage)
                 completed_batches += 1
-                completed_blocks += len(chunk)
+                completed_blocks += len(expanded_translations)
 
                 if checkpoint_path:
                     save_checkpoint(checkpoint_path, translations)
@@ -1491,14 +1525,29 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
 
     st.subheader("Document Text Blocks")
     translatable_blocks = [block for block in blocks if should_translate(block.text)]
+    unique_translatable_count = len({translation_memory_key(block.text) for block in translatable_blocks})
     saved_translations = load_checkpoint(progress_path)
+    saved_memory_keys = {
+        translation_memory_key(block.text)
+        for block in translatable_blocks
+        if block.location in saved_translations
+    }
     saved_count = sum(1 for block in translatable_blocks if block.location in saved_translations)
-    batch_count = (max(len(translatable_blocks) - saved_count, 0) + DOCUMENT_BATCH_SIZE - 1) // DOCUMENT_BATCH_SIZE
+    pending_unique_count = len(
+        {
+            translation_memory_key(block.text)
+            for block in translatable_blocks
+            if block.location not in saved_translations and translation_memory_key(block.text) not in saved_memory_keys
+        }
+    )
+    batch_count = (pending_unique_count + DOCUMENT_BATCH_SIZE - 1) // DOCUMENT_BATCH_SIZE
 
     st.write(
         f"Detected {len(blocks)} text block(s). "
         f"{len(translatable_blocks)} need Japanese translation. "
+        f"{unique_translatable_count} unique Japanese phrase(s). "
         f"{saved_count} already saved. "
+        f"{pending_unique_count} unique phrase(s) still need API translation. "
         f"{batch_count} batch(es) remaining. "
         f"Batch size: {DOCUMENT_BATCH_SIZE}. "
         f"Parallel batches: {max_parallel_batches()}."
