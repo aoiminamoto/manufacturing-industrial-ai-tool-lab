@@ -46,6 +46,9 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PROGRESS_DIR = BASE_DIR / ".term1_progress"
 USAGE_COUNT_PATH = BASE_DIR / ".term1_usage_count.json"
 JOB_DB_PATH = BASE_DIR / ".term1_jobs.db"
+JOB_STORAGE_DIR = BASE_DIR / ".term1_job_storage"
+JOB_UPLOAD_DIR = JOB_STORAGE_DIR / "uploads"
+JOB_RESULT_DIR = JOB_STORAGE_DIR / "results"
 GENERAL_TRANSLATION_MODE = "General Plant Translation"
 PLC_TRANSLATION_MODE = "PLC/SPLC Comment Standardization"
 TRANSLATION_MODES = [PLC_TRANSLATION_MODE, GENERAL_TRANSLATION_MODE]
@@ -273,6 +276,11 @@ def init_job_store() -> None:
             conn.execute(
                 "ALTER TABLE translation_jobs ADD COLUMN translation_mode TEXT DEFAULT ''"
             )
+        for column_name in ("source_file_path", "result_file_path", "result_mime", "progress_message"):
+            if column_name not in columns:
+                conn.execute(
+                    f"ALTER TABLE translation_jobs ADD COLUMN {column_name} TEXT DEFAULT ''"
+                )
 
 
 def create_translation_job(
@@ -282,6 +290,10 @@ def create_translation_job(
     translatable_blocks: int,
     total_batches: int,
     translation_mode: str = GENERAL_TRANSLATION_MODE,
+    source_file_path: str = "",
+    result_file_path: str = "",
+    result_mime: str = "",
+    status: str = "running",
 ) -> str:
     init_job_store()
     job_id = f"job_{int(time.time())}_{hashlib.sha256(f'{file_name}:{file_size_bytes}:{time.time()}'.encode()).hexdigest()[:8]}"
@@ -290,18 +302,22 @@ def create_translation_job(
         conn.execute(
             """
             INSERT INTO translation_jobs (
-                job_id, file_name, file_size_bytes, translation_mode, status, total_blocks,
+                job_id, file_name, file_size_bytes, translation_mode, status,
+                source_file_path, result_file_path, result_mime, total_blocks,
                 translatable_blocks, completed_blocks, total_batches,
                 completed_batches, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
                 file_name,
                 file_size_bytes,
                 translation_mode,
-                "running",
+                status,
+                source_file_path,
+                result_file_path,
+                result_mime,
                 total_blocks,
                 translatable_blocks,
                 0,
@@ -326,6 +342,10 @@ def update_translation_job(job_id: str, **fields) -> None:
         "output_tokens",
         "total_tokens",
         "result_file_name",
+        "source_file_path",
+        "result_file_path",
+        "result_mime",
+        "progress_message",
         "error_message",
         "finished_at",
     }
@@ -373,6 +393,10 @@ def translation_job_detail(job_id: str) -> pd.DataFrame:
                 file_name,
                 file_size_bytes,
                 translation_mode,
+                source_file_path,
+                result_file_path,
+                result_mime,
+                progress_message,
                 status,
                 total_blocks,
                 translatable_blocks,
@@ -1323,6 +1347,89 @@ def mime_type(file_name: str) -> str:
     return "text/plain"
 
 
+def safe_storage_name(file_name: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(file_name).name).strip("_")
+    return safe_name or "document.txt"
+
+
+def ensure_job_storage_dirs() -> None:
+    JOB_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    JOB_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def job_upload_path(job_id: str, file_name: str) -> Path:
+    ensure_job_storage_dirs()
+    return JOB_UPLOAD_DIR / f"{job_id}_{safe_storage_name(file_name)}"
+
+
+def job_result_path(job_id: str, file_name: str) -> Path:
+    ensure_job_storage_dirs()
+    translated_name = output_file_name(file_name)
+    return JOB_RESULT_DIR / f"{job_id}_{safe_storage_name(translated_name)}"
+
+
+@st.cache_resource
+def background_job_executor() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=2)
+
+
+def run_document_translation_job(
+    job_id: str,
+    raw_document: bytes,
+    file_name: str,
+    blocks: list[TextBlock],
+    glossary: pd.DataFrame,
+    translation_mode: str,
+    checkpoint_path: Path,
+    total_batches: int,
+) -> None:
+    started_at = time.time()
+
+    def update_progress(done, total, done_batches, total_batches, elapsed, message):
+        update_translation_job(
+            job_id,
+            status="running",
+            completed_blocks=done,
+            completed_batches=done_batches,
+            progress_message=message,
+        )
+
+    try:
+        update_translation_job(job_id, status="running", error_message="", progress_message="Background translation started.")
+        translations, _, token_usage = translate_blocks_batch(
+            blocks,
+            glossary,
+            translation_mode,
+            checkpoint_path=checkpoint_path,
+            progress_callback=update_progress,
+        )
+        translated_document = build_translated_document(raw_document, file_name, translations, blocks)
+        translated_name = output_file_name(file_name)
+        result_path = job_result_path(job_id, file_name)
+        result_path.write_bytes(translated_document)
+        update_translation_job(
+            job_id,
+            status="completed",
+            completed_blocks=sum(1 for block in blocks if should_translate(block.text)),
+            completed_batches=total_batches,
+            input_tokens=token_usage.input_tokens,
+            output_tokens=token_usage.output_tokens,
+            total_tokens=token_usage.total_tokens,
+            result_file_name=translated_name,
+            result_file_path=str(result_path),
+            result_mime=mime_type(translated_name),
+            progress_message=f"Completed in {format_duration(time.time() - started_at)}.",
+            finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    except Exception as exc:
+        update_translation_job(
+            job_id,
+            status="failed",
+            error_message=format_translation_error(exc),
+            finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+
 def terminology_report(hits: list[TermHit]) -> pd.DataFrame:
     return pd.DataFrame(
         [{"Japanese": hit.jp, "Required English": hit.en, "Count": hit.count} for hit in hits]
@@ -1507,9 +1614,21 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                         {"Field": "Created", "Value": job["created_at"]},
                         {"Field": "Updated", "Value": job["updated_at"]},
                         {"Field": "Finished", "Value": job["finished_at"] or "Not finished"},
+                        {"Field": "Progress message", "Value": job["progress_message"] or "None"},
                         {"Field": "Error", "Value": job["error_message"] or "None"},
                     ]
                     st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
+                    result_path_text = str(job.get("result_file_path") or "")
+                    result_path = Path(result_path_text) if result_path_text else None
+                    if job["status"] == "completed" and result_path is not None and result_path.exists():
+                        st.download_button(
+                            "Download Completed Job",
+                            data=result_path.read_bytes(),
+                            file_name=job["result_file_name"] or output_file_name(job["file_name"]),
+                            mime=job["result_mime"] or mime_type(job["file_name"]),
+                            type="primary",
+                            key=f"download_{job['job_id']}",
+                        )
 
     uploaded_document = st.file_uploader(
         "Upload Japanese document",
@@ -1635,105 +1754,34 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             st.session_state["translated_document_terms"] = []
             return
 
-        progress.progress(initial_ratio)
-        status.write("Preparing translation...")
-
-        def update_progress(done, total, done_batches, total_batches, elapsed, message):
-            ratio = 1.0 if total == 0 else min(done / total, 1.0)
-            progress.progress(ratio)
-            eta_text = "calculating"
-            if done > saved_count and ratio < 1.0:
-                rate = elapsed / max(done - saved_count, 1)
-                eta_text = format_duration(rate * (total - done))
-            elif ratio >= 1.0:
-                eta_text = "0s"
-
-            if done_batches == 0 and total_batches:
-                batch_text = f"Ready to continue with {total_batches} batch(es)."
-            else:
-                batch_text = f"Batch {done_batches}/{total_batches}."
-
-            update_translation_job(
-                job_id,
-                status="running",
-                completed_blocks=done,
-                completed_batches=done_batches,
-            )
-            status.write(message)
-            metrics.write(
-                f"Translated {done}/{total} Japanese block(s). "
-                f"{batch_text} "
-                f"Elapsed {format_duration(elapsed)}. "
-                f"ETA {eta_text}."
-            )
-
-        try:
-            run_started_at = time.time()
-            job_id = create_translation_job(
-                uploaded_document.name,
-                len(raw_document),
-                len(blocks),
-                len(translatable_blocks),
-                batch_count,
-                translation_mode,
-            )
-            status.write(f"Translating {len(translatable_blocks)} Japanese block(s) in {batch_count} remaining batch(es) using {translation_mode}...")
-            translations, all_hits, token_usage = translate_blocks_batch(
-                blocks,
-                active_glossary,
-                translation_mode,
-                checkpoint_path=progress_path,
-                progress_callback=update_progress,
-            )
-            progress.progress(1.0)
-
-            translated_document = build_translated_document(raw_document, uploaded_document.name, translations, blocks)
-            translated_name = output_file_name(uploaded_document.name)
-
-            st.session_state["translated_document_bytes"] = translated_document
-            st.session_state["translated_document_name"] = translated_name
-            st.session_state["translated_document_mime"] = mime_type(translated_name)
-            st.session_state["translated_document_preview"] = [
-                {
-                    "Original": block.text,
-                    "Translation": translations.get(block.location, ""),
-                }
-                for block in blocks[:20]
-            ]
-            st.session_state["translated_document_terms"] = all_hits
-            status.success("Translation complete.")
-            total_elapsed = time.time() - run_started_at
-            avg_per_block = total_elapsed / max(len(translatable_blocks) - saved_count, 1)
-            avg_per_batch = total_elapsed / max(batch_count, 1)
-            update_translation_job(
-                job_id,
-                status="completed",
-                completed_blocks=len(translatable_blocks),
-                completed_batches=batch_count,
-                input_tokens=token_usage.input_tokens,
-                output_tokens=token_usage.output_tokens,
-                total_tokens=token_usage.total_tokens,
-                result_file_name=translated_name,
-                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
-            )
-            metrics.write(
-                f"Translated {len(translatable_blocks)}/{len(translatable_blocks)} Japanese block(s). "
-                f"Total time {format_duration(total_elapsed)}. "
-                f"Avg {avg_per_block:.2f}s/block, {format_duration(avg_per_batch)}/batch. "
-                f"{token_usage.display()} "
-                "Download is ready."
-            )
-        except Exception as exc:
-            update_translation_job(
-                job_id,
-                status="failed",
-                error_message=format_translation_error(exc),
-                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
-            )
-            st.error(
-                f"Translation failed: {format_translation_error(exc)} "
-                "Saved progress remains available; click Translate Document again to resume."
-            )
+        job_id = create_translation_job(
+            uploaded_document.name,
+            len(raw_document),
+            len(blocks),
+            len(translatable_blocks),
+            batch_count,
+            translation_mode,
+            status="pending",
+        )
+        source_path = job_upload_path(job_id, uploaded_document.name)
+        source_path.write_bytes(raw_document)
+        update_translation_job(job_id, source_file_path=str(source_path))
+        background_job_executor().submit(
+            run_document_translation_job,
+            job_id,
+            raw_document,
+            uploaded_document.name,
+            blocks,
+            active_glossary,
+            translation_mode,
+            progress_path,
+            batch_count,
+        )
+        status.success(f"Background job started: {job_id}")
+        metrics.write(
+            "You can refresh this page while the background job runs. "
+            "Open Recent Translation Jobs to check progress and download the completed file."
+        )
 
     if st.session_state.get("translated_document_bytes"):
         st.success("Download ready. Click the button below to save the translated file.")
