@@ -1,0 +1,6 @@
+Japanese,Preferred English,Do Not Use,Notes
+JP_TERM_FOR_NG,NG,"poor; defective; inoperative",Replace JP_TERM_FOR_NG with approved Japanese source term
+JP_TERM_FOR_COMPLETE,Complete,"finished; done",Use concise PLC label wording
+JP_TERM_FOR_CONFIRM,Confirm,check,Use only if this matches the approved plant wording
+JP_TERM_FOR_AUTO,Auto,automatic,Short PLC/HMI label
+JP_TERM_FOR_MANUAL,Manual,,Short PLC/HMI label
