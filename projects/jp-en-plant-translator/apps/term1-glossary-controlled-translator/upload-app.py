@@ -33,6 +33,10 @@ DEFAULT_GLOSSARY_PATHS = [
     BASE_DIR / "glossary.xlsx",
     BASE_DIR / "glossary.csv",
 ]
+DEFAULT_PLC_RULE_PATHS = [
+    BASE_DIR / "plc_abbreviation_rules.xlsx",
+    BASE_DIR / "plc_abbreviation_rules.csv",
+]
 DEFAULT_MODEL = "gpt-4.1-mini"
 DOCUMENT_BATCH_SIZE = 120
 MAX_PARALLEL_BATCHES = 3
@@ -485,6 +489,32 @@ def read_glossary(uploaded_file) -> pd.DataFrame:
     raise ValueError("Could not read glossary file. Please use CSV UTF-8 or Excel format.")
 
 
+def read_rules_file(path: Path) -> pd.DataFrame:
+    raw = path.read_bytes()
+    is_excel = raw[:2] == b"PK" or path.name.lower().endswith((".xlsx", ".xlsm", ".xls"))
+    if is_excel:
+        try:
+            return pd.read_excel(io.BytesIO(raw), sheet_name=0)
+        except ImportError:
+            return xlsx_to_dataframe(raw)
+        except BadZipFile as exc:
+            raise ValueError(f"The rule Excel file could not be opened: {path.name}") from exc
+
+    for encoding in ("utf-8-sig", "utf-8", "cp932", "shift_jis", "cp1252"):
+        try:
+            return pd.read_csv(io.BytesIO(raw), encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"Could not read rule file: {path.name}")
+
+
+def read_plc_rules() -> pd.DataFrame:
+    rule_path = next((path for path in DEFAULT_PLC_RULE_PATHS if path.exists()), None)
+    if rule_path is None:
+        return pd.DataFrame(columns=["JP", "EN", "Note", "Category"])
+    return read_rules_file(rule_path)
+
+
 def normalize_glossary(df: pd.DataFrame) -> pd.DataFrame:
     aliases = {
         "jp": "JP",
@@ -499,6 +529,18 @@ def normalize_glossary(df: pd.DataFrame) -> pd.DataFrame:
         "notes": "Note",
         "comment": "Note",
     }
+    aliases.update(
+        {
+            "source japanese": "JP",
+            "source": "JP",
+            "preferred english": "EN",
+            "preferred abbreviation": "EN",
+            "abbreviation": "EN",
+            "standard english": "EN",
+            "target": "EN",
+            "do not use": "Note",
+        }
+    )
 
     renamed = {}
     for column in df.columns:
@@ -518,6 +560,25 @@ def normalize_glossary(df: pd.DataFrame) -> pd.DataFrame:
     glossary = glossary.drop_duplicates(subset=["JP"], keep="first")
     glossary["term_length"] = glossary["JP"].str.len()
     return glossary.sort_values("term_length", ascending=False).drop(columns=["term_length"]).reset_index(drop=True)
+
+
+def normalize_plc_rules(df: pd.DataFrame) -> pd.DataFrame:
+    rules = normalize_glossary(df)
+    if rules.empty:
+        return rules
+    rules = rules.copy()
+    rules["Category"] = "PLC/SPLC Rule"
+    return rules
+
+
+def glossary_for_mode(glossary: pd.DataFrame, plc_rules: pd.DataFrame, translation_mode: str) -> pd.DataFrame:
+    if translation_mode != PLC_TRANSLATION_MODE or plc_rules.empty:
+        return glossary
+
+    combined = pd.concat([plc_rules, glossary], ignore_index=True, sort=False).fillna("")
+    combined = combined.drop_duplicates(subset=["JP"], keep="first")
+    combined["term_length"] = combined["JP"].str.len()
+    return combined.sort_values("term_length", ascending=False).drop(columns=["term_length"]).reset_index(drop=True)
 
 
 def apply_glossary_to_source(text: str, glossary: pd.DataFrame) -> tuple[str, list[TermHit]]:
@@ -1243,6 +1304,34 @@ def glossary_version_text() -> str:
     )
 
 
+def plc_rules_version_text() -> str:
+    rule_path = next((path for path in DEFAULT_PLC_RULE_PATHS if path.exists()), None)
+    if rule_path is None:
+        expected = ", ".join(path.name for path in DEFAULT_PLC_RULE_PATHS)
+        return f"PLC rule file was not found. Expected one of: {expected}"
+
+    raw = rule_path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()[:12]
+    modified = rule_path.stat().st_mtime
+    modified_text = datetime.fromtimestamp(modified, ZoneInfo("America/New_York")).strftime(
+        "%Y-%m-%d %I:%M %p ET"
+    )
+    try:
+        rule_count = len(normalize_plc_rules(read_plc_rules()))
+    except Exception:
+        rule_count = "Unavailable"
+
+    return "\n".join(
+        [
+            f"PLC rules file: {rule_path.name}",
+            f"Last updated: {modified_text}",
+            "Updated by: Aoi Minamoto",
+            f"PLC rules: {rule_count}",
+            f"Version hash: {digest}",
+        ]
+    )
+
+
 def apply_compact_style() -> None:
     st.markdown(
         """
@@ -1277,7 +1366,7 @@ def apply_compact_style() -> None:
     )
 
 
-def render_text_translation(glossary: pd.DataFrame) -> None:
+def render_text_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> None:
     translation_mode = st.radio(
         "Translation mode",
         TRANSLATION_MODES,
@@ -1298,11 +1387,12 @@ def render_text_translation(glossary: pd.DataFrame) -> None:
 
         progress = st.progress(0)
         status = st.empty()
+        active_glossary = glossary_for_mode(glossary, plc_rules, translation_mode)
 
         try:
             status.write("Preparing glossary terms and protected codes...")
             progress.progress(0.2)
-            translated_text, hits, token_usage = translate_block(jp_text, glossary, translation_mode)
+            translated_text, hits, token_usage = translate_block(jp_text, active_glossary, translation_mode)
             progress.progress(1.0)
             status.success("Translation complete.")
             st.caption(token_usage.display())
@@ -1326,7 +1416,7 @@ def render_text_translation(glossary: pd.DataFrame) -> None:
             st.error(f"Translation failed: {format_translation_error(exc)}")
 
 
-def render_document_translation(glossary: pd.DataFrame) -> None:
+def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> None:
     st.info("Accepted document types: CSV (.csv), Text (.txt/.as), Word (.docx), and Excel (.xlsx/.xlsm). Large file safety limit: 50 MB.")
     translation_mode = st.radio(
         "Translation mode",
@@ -1452,6 +1542,7 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
 
     if translate_clicked:
         job_id = ""
+        active_glossary = glossary_for_mode(glossary, plc_rules, translation_mode)
         if not blocks:
             st.warning(
                 "No translatable text was found in this document. "
@@ -1522,7 +1613,7 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
             status.write(f"Translating {len(translatable_blocks)} Japanese block(s) in {batch_count} remaining batch(es) using {translation_mode}...")
             translations, all_hits, token_usage = translate_blocks_batch(
                 blocks,
-                glossary,
+                active_glossary,
                 translation_mode,
                 checkpoint_path=progress_path,
                 progress_callback=update_progress,
@@ -1619,7 +1710,9 @@ with st.sidebar:
     st.header("Knowledge Base")
     st.success("Internal glossary is already loaded.")
     st.code(glossary_version_text(), language="text")
-    st.caption("This demo uses the built-in glossary.xlsx file. Users do not need to upload a glossary.")
+    st.success("PLC/SPLC rules are controlled by the app owner.")
+    st.code(plc_rules_version_text(), language="text")
+    st.caption("Users choose a translation mode. Glossary and PLC rules are managed as controlled internal files.")
     st.caption("For demo testing, please use small documents to avoid unnecessary OpenAI API cost.")
 
 try:
@@ -1628,10 +1721,16 @@ except Exception as exc:
     st.error(f"Glossary error: {exc}")
     st.stop()
 
+try:
+    plc_rules = normalize_plc_rules(read_plc_rules())
+except Exception as exc:
+    st.error(f"PLC rule file error: {exc}")
+    st.stop()
+
 text_tab, document_tab = st.tabs(["Text Translation", "Document Translation"])
 
 with text_tab:
-    render_text_translation(glossary)
+    render_text_translation(glossary, plc_rules)
 
 with document_tab:
-    render_document_translation(glossary)
+    render_document_translation(glossary, plc_rules)
