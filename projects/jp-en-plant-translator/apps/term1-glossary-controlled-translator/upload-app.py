@@ -320,6 +320,37 @@ def recent_translation_jobs(limit: int = 10) -> pd.DataFrame:
         )
 
 
+def translation_job_detail(job_id: str) -> pd.DataFrame:
+    init_job_store()
+    with sqlite3.connect(JOB_DB_PATH) as conn:
+        return pd.read_sql_query(
+            """
+            SELECT
+                job_id,
+                file_name,
+                file_size_bytes,
+                status,
+                total_blocks,
+                translatable_blocks,
+                completed_blocks,
+                total_batches,
+                completed_batches,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                result_file_name,
+                error_message,
+                created_at,
+                updated_at,
+                finished_at
+            FROM translation_jobs
+            WHERE job_id = ?
+            """,
+            conn,
+            params=(job_id,),
+        )
+
+
 def is_safe_glossary_term(jp: str) -> bool:
     jp = clean_text(jp)
     if len(jp) < 2:
@@ -1204,6 +1235,32 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
             st.info("No translation jobs recorded yet.")
         else:
             st.dataframe(jobs, use_container_width=True, hide_index=True)
+            selected_job = st.selectbox(
+                "View job details",
+                options=[""] + jobs["Job ID"].tolist(),
+                format_func=lambda value: "Select a job" if value == "" else value,
+            )
+            if selected_job:
+                detail = translation_job_detail(selected_job)
+                if detail.empty:
+                    st.warning("Job detail was not found.")
+                else:
+                    job = detail.iloc[0].to_dict()
+                    detail_rows = [
+                        {"Field": "Job ID", "Value": job["job_id"]},
+                        {"Field": "File", "Value": job["file_name"]},
+                        {"Field": "File size", "Value": f"{job['file_size_bytes']:,} bytes"},
+                        {"Field": "Status", "Value": job["status"]},
+                        {"Field": "Blocks", "Value": f"{job['completed_blocks']}/{job['translatable_blocks']} translated ({job['total_blocks']} total text blocks)"},
+                        {"Field": "Batches", "Value": f"{job['completed_batches']}/{job['total_batches']}"},
+                        {"Field": "Tokens", "Value": f"input {job['input_tokens']:,}, output {job['output_tokens']:,}, total {job['total_tokens']:,}"},
+                        {"Field": "Result", "Value": job["result_file_name"] or "Not ready"},
+                        {"Field": "Created", "Value": job["created_at"]},
+                        {"Field": "Updated", "Value": job["updated_at"]},
+                        {"Field": "Finished", "Value": job["finished_at"] or "Not finished"},
+                        {"Field": "Error", "Value": job["error_message"] or "None"},
+                    ]
+                    st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
 
     uploaded_document = st.file_uploader(
         "Upload Japanese document",
