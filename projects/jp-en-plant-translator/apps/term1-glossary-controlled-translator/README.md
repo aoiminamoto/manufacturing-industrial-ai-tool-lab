@@ -6,12 +6,13 @@ Runnable Streamlit implementation of the JP-EN Plant Translator concept.
 
 - Translates Japanese plant-floor text to English
 - Applies approved glossary terms before AI translation
-- Supports text input and CSV, TXT, DOCX, XLSX, and XLSM uploads
+- Supports text input and CSV, TXT, AS, DOCX, XLSX, and XLSM uploads
 - Skips non-Japanese Excel cells to reduce cost and runtime
 - Saves translation progress by batch for large files
 - Resumes after network or API interruption
 - Runs controlled parallel batch translation for faster large-file processing
 - Shows progress, batch count, elapsed time, and ETA
+- Records local translation job history in SQLite
 - Counts app sessions locally in the sidebar
 
 ## Safety
@@ -25,6 +26,7 @@ This folder intentionally excludes confidential runtime files:
 - translated customer/company files
 - `.term1_progress/`
 - `.term1_usage_count.json`
+- `.term1_jobs.db`
 
 Use only synthetic or sanitized sample files in this public repository.
 

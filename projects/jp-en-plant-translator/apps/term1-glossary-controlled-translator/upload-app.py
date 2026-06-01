@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -40,6 +41,7 @@ OPENAI_TIMEOUT_SECONDS = 120
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PROGRESS_DIR = BASE_DIR / ".term1_progress"
 USAGE_COUNT_PATH = BASE_DIR / ".term1_usage_count.json"
+JOB_DB_PATH = BASE_DIR / ".term1_jobs.db"
 PROTECTED_PATTERN = re.compile(
     r"\b(?:[A-Z]{1,6}[-_]?\d{1,6}[A-Z]?|\d+[A-Z]{1,4}|[XYMDSZR][0-9]{1,5}|[A-Z]{2,}-[A-Z0-9-]+)\b"
 )
@@ -210,6 +212,112 @@ def increment_usage_count_once() -> int:
     USAGE_COUNT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     st.session_state["usage_counted"] = True
     return count
+
+
+def init_job_store() -> None:
+    with sqlite3.connect(JOB_DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS translation_jobs (
+                job_id TEXT PRIMARY KEY,
+                file_name TEXT NOT NULL,
+                file_size_bytes INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                total_blocks INTEGER DEFAULT 0,
+                translatable_blocks INTEGER DEFAULT 0,
+                completed_blocks INTEGER DEFAULT 0,
+                total_batches INTEGER DEFAULT 0,
+                completed_batches INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                total_tokens INTEGER DEFAULT 0,
+                result_file_name TEXT DEFAULT '',
+                error_message TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                finished_at TEXT DEFAULT ''
+            )
+            """
+        )
+
+
+def create_translation_job(file_name: str, file_size_bytes: int, total_blocks: int, translatable_blocks: int, total_batches: int) -> str:
+    init_job_store()
+    job_id = f"job_{int(time.time())}_{hashlib.sha256(f'{file_name}:{file_size_bytes}:{time.time()}'.encode()).hexdigest()[:8]}"
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(JOB_DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO translation_jobs (
+                job_id, file_name, file_size_bytes, status, total_blocks,
+                translatable_blocks, completed_blocks, total_batches,
+                completed_batches, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                file_name,
+                file_size_bytes,
+                "running",
+                total_blocks,
+                translatable_blocks,
+                0,
+                total_batches,
+                0,
+                now,
+                now,
+            ),
+        )
+    return job_id
+
+
+def update_translation_job(job_id: str, **fields) -> None:
+    if not job_id or not fields:
+        return
+    init_job_store()
+    allowed_fields = {
+        "status",
+        "completed_blocks",
+        "completed_batches",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "result_file_name",
+        "error_message",
+        "finished_at",
+    }
+    updates = {key: value for key, value in fields.items() if key in allowed_fields}
+    if not updates:
+        return
+    updates["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    values = list(updates.values()) + [job_id]
+    with sqlite3.connect(JOB_DB_PATH) as conn:
+        conn.execute(f"UPDATE translation_jobs SET {assignments} WHERE job_id = ?", values)
+
+
+def recent_translation_jobs(limit: int = 10) -> pd.DataFrame:
+    init_job_store()
+    with sqlite3.connect(JOB_DB_PATH) as conn:
+        return pd.read_sql_query(
+            """
+            SELECT
+                job_id AS "Job ID",
+                file_name AS "File",
+                status AS "Status",
+                completed_blocks || '/' || translatable_blocks AS "Blocks",
+                completed_batches || '/' || total_batches AS "Batches",
+                total_tokens AS "Tokens",
+                result_file_name AS "Result",
+                updated_at AS "Updated"
+            FROM translation_jobs
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            conn,
+            params=(limit,),
+        )
 
 
 def is_safe_glossary_term(jp: str) -> bool:
@@ -753,7 +861,7 @@ def build_translated_csv(raw: bytes, translations: dict[str, str]) -> bytes:
 
 def extract_text_blocks(raw: bytes, file_name: str) -> list[TextBlock]:
     lower_name = file_name.lower()
-    if lower_name.endswith(".txt"):
+    if lower_name.endswith((".txt", ".as")):
         text = read_text_file(raw)
         return [TextBlock(location=f"text:{index}", text=part.strip()) for index, part in enumerate(text.split("\n\n")) if part.strip()]
 
@@ -766,7 +874,7 @@ def extract_text_blocks(raw: bytes, file_name: str) -> list[TextBlock]:
     if lower_name.endswith((".xlsx", ".xlsm")):
         return extract_xlsx_blocks(raw)
 
-    raise ValueError("Supported document types: CSV, TXT, DOCX, XLSX, XLSM.")
+    raise ValueError("Supported document types: CSV, TXT, AS, DOCX, XLSX, XLSM.")
 
 
 def extract_docx_blocks(raw: bytes) -> list[TextBlock]:
@@ -877,7 +985,7 @@ def replace_text_in_paragraph(paragraph: ET.Element, text_nodes: list[ET.Element
 
 def build_translated_document(raw: bytes, file_name: str, translations: dict[str, str], blocks: list[TextBlock]) -> bytes:
     lower_name = file_name.lower()
-    if lower_name.endswith(".txt"):
+    if lower_name.endswith((".txt", ".as")):
         return write_text_file(blocks, translations)
 
     if lower_name.endswith(".csv"):
@@ -889,7 +997,7 @@ def build_translated_document(raw: bytes, file_name: str, translations: dict[str
     if lower_name.endswith((".xlsx", ".xlsm")):
         return build_translated_xlsx(raw, translations)
 
-    raise ValueError("Supported document types: CSV, TXT, DOCX, XLSX, XLSM.")
+    raise ValueError("Supported document types: CSV, TXT, AS, DOCX, XLSX, XLSM.")
 
 
 def build_translated_docx(raw: bytes, translations: dict[str, str]) -> bytes:
@@ -968,6 +1076,8 @@ def mime_type(file_name: str) -> str:
     lower_name = file_name.lower()
     if lower_name.endswith(".csv"):
         return "text/csv"
+    if lower_name.endswith(".as"):
+        return "text/plain"
     if lower_name.endswith(".docx"):
         return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     if lower_name.endswith(".xlsx"):
@@ -1087,14 +1197,21 @@ def render_text_translation(glossary: pd.DataFrame) -> None:
 
 
 def render_document_translation(glossary: pd.DataFrame) -> None:
-    st.info("Accepted document types: CSV (.csv), Word (.docx), Excel (.xlsx/.xlsm), and Text (.txt). Large file safety limit: 50 MB.")
+    st.info("Accepted document types: CSV (.csv), Text (.txt/.as), Word (.docx), and Excel (.xlsx/.xlsm). Large file safety limit: 50 MB.")
+    with st.expander("Recent Translation Jobs"):
+        jobs = recent_translation_jobs()
+        if jobs.empty:
+            st.info("No translation jobs recorded yet.")
+        else:
+            st.dataframe(jobs, use_container_width=True, hide_index=True)
+
     uploaded_document = st.file_uploader(
         "Upload Japanese document",
-        type=["csv", "txt", "docx", "xlsx", "xlsm"],
+        type=["csv", "txt", "as", "docx", "xlsx", "xlsm"],
     )
 
     if uploaded_document is None:
-        st.info("Upload a Word, Excel, or TXT file to start.")
+        st.info("Upload a CSV, TXT, AS, Word, or Excel file to start.")
         return
 
     raw_document = uploaded_document.getvalue()
@@ -1170,10 +1287,11 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
         rerun_app()
 
     if translate_clicked:
+        job_id = ""
         if not blocks:
             st.warning(
                 "No translatable text was found in this document. "
-                "Please upload a CSV, TXT, DOCX, XLSX, or XLSM file that contains selectable text, not scanned images. "
+                "Please upload a CSV, TXT, AS, DOCX, XLSX, or XLSM file that contains selectable text, not scanned images. "
                 "For Excel, save old .xls files as .xlsx first."
             )
             return
@@ -1181,6 +1299,13 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
             st.info("No Japanese text was found. Downloading the original document is enough.")
             translated_document = build_translated_document(raw_document, uploaded_document.name, {}, blocks)
             translated_name = output_file_name(uploaded_document.name)
+            job_id = create_translation_job(uploaded_document.name, len(raw_document), len(blocks), 0, 0)
+            update_translation_job(
+                job_id,
+                status="completed",
+                result_file_name=translated_name,
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            )
             st.session_state["translated_document_bytes"] = translated_document
             st.session_state["translated_document_name"] = translated_name
             st.session_state["translated_document_mime"] = mime_type(translated_name)
@@ -1206,6 +1331,12 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
             else:
                 batch_text = f"Batch {done_batches}/{total_batches}."
 
+            update_translation_job(
+                job_id,
+                status="running",
+                completed_blocks=done,
+                completed_batches=done_batches,
+            )
             status.write(message)
             metrics.write(
                 f"Translated {done}/{total} Japanese block(s). "
@@ -1216,6 +1347,13 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
 
         try:
             run_started_at = time.time()
+            job_id = create_translation_job(
+                uploaded_document.name,
+                len(raw_document),
+                len(blocks),
+                len(translatable_blocks),
+                batch_count,
+            )
             status.write(f"Translating {len(translatable_blocks)} Japanese block(s) in {batch_count} remaining batch(es)...")
             translations, all_hits, token_usage = translate_blocks_batch(
                 blocks,
@@ -1243,6 +1381,17 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
             total_elapsed = time.time() - run_started_at
             avg_per_block = total_elapsed / max(len(translatable_blocks) - saved_count, 1)
             avg_per_batch = total_elapsed / max(batch_count, 1)
+            update_translation_job(
+                job_id,
+                status="completed",
+                completed_blocks=len(translatable_blocks),
+                completed_batches=batch_count,
+                input_tokens=token_usage.input_tokens,
+                output_tokens=token_usage.output_tokens,
+                total_tokens=token_usage.total_tokens,
+                result_file_name=translated_name,
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            )
             metrics.write(
                 f"Translated {len(translatable_blocks)}/{len(translatable_blocks)} Japanese block(s). "
                 f"Total time {format_duration(total_elapsed)}. "
@@ -1251,6 +1400,12 @@ def render_document_translation(glossary: pd.DataFrame) -> None:
                 "Download is ready."
             )
         except Exception as exc:
+            update_translation_job(
+                job_id,
+                status="failed",
+                error_message=format_translation_error(exc),
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            )
             st.error(
                 f"Translation failed: {format_translation_error(exc)} "
                 "Saved progress remains available; click Translate Document again to resume."
