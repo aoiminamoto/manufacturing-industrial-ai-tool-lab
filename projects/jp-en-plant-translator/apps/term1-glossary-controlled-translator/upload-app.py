@@ -1871,13 +1871,11 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 components.html("<script>setTimeout(() => window.parent.location.reload(), 15000);</script>", height=0)
 
     uploaded_document = st.file_uploader(
-        "Upload Japanese document",
+        "Upload Japanese document (Max 50 MB. Files over 5 MB or 1,000 text blocks may run in background)",
         type=["csv", "txt", "as", "docx", "xlsx", "xlsm"],
     )
-    st.caption("Max 50 MB. Files over 5 MB or 1,000 text blocks may run in background.")
 
     if uploaded_document is None:
-        st.info("Upload CSV, TXT, AS, Word, or Excel.")
         return
 
     raw_document = uploaded_document.getvalue()
