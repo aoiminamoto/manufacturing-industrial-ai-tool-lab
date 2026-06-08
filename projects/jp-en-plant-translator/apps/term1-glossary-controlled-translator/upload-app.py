@@ -1757,13 +1757,18 @@ def glossary_version_text() -> str:
         term_count = max(len(read_glossary(None)) - 1, 0)
     except Exception:
         term_count = "Unavailable"
+    term_count_text = f"{term_count:,}" if isinstance(term_count, int) else str(term_count)
 
     return "\n".join(
         [
-            "Glossary: glossary.xlsx",
-            f"Update Date: {modified_text}",
-            "Update person: Aoi Minamoto",
-            f"Quantity of Glossary: {term_count}",
+            "Glossary Information",
+            "",
+            "Version: v1.0",
+            f"Terms: {term_count_text}",
+            f"Last Updated: {modified_text}",
+            "Maintained By: Aoi Minamoto",
+            "",
+            "Source File: glossary.xlsx",
         ]
     )
 
