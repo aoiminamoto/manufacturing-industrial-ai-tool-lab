@@ -48,7 +48,7 @@ DOCUMENT_BATCH_SIZE = 120
 MAX_PARALLEL_BATCHES = 3
 MAX_TRANSLATION_RETRIES = 3
 OPENAI_TIMEOUT_SECONDS = 120
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024
 EMAIL_DRAFT_RECOMMENDED_BYTES = 5 * 1024 * 1024
 EMAIL_DRAFT_RECOMMENDED_BLOCKS = 1000
@@ -1871,7 +1871,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 components.html("<script>setTimeout(() => window.parent.location.reload(), 15000);</script>", height=0)
 
     uploaded_document = st.file_uploader(
-        "Upload Japanese document (Max 50 MB. Files over 5 MB or 1,000 text blocks may run in background)",
+        "Upload Japanese document (Max 100 MB. Files over 5 MB or 1,000 text blocks may run in background)",
         type=["csv", "txt", "as", "docx", "xlsx", "xlsm"],
     )
 
@@ -1880,7 +1880,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
 
     raw_document = uploaded_document.getvalue()
     if len(raw_document) > MAX_UPLOAD_BYTES:
-        st.warning("This document is larger than the 50 MB safety limit. Please split the file or test with a smaller copy.")
+        st.warning("This document is larger than the 100 MB safety limit. Please split the file or test with a smaller copy.")
         return
 
     document_key = f"{document_fingerprint(uploaded_document.name, raw_document)}::{translation_mode}"
