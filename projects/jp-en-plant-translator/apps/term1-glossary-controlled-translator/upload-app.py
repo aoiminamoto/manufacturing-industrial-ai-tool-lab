@@ -1857,7 +1857,7 @@ def apply_compact_style() -> None:
         .usage-card-value {
             color: #111827;
             font-size: 2.45rem;
-            font-weight: 750;
+            font-weight: 600;
             line-height: 1;
         }
         </style>
