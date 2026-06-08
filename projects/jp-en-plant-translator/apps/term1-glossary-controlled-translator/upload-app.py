@@ -48,7 +48,7 @@ DOCUMENT_BATCH_SIZE = 120
 MAX_PARALLEL_BATCHES = 3
 MAX_TRANSLATION_RETRIES = 3
 OPENAI_TIMEOUT_SECONDS = 120
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024
 EMAIL_DRAFT_RECOMMENDED_BYTES = 5 * 1024 * 1024
 EMAIL_DRAFT_RECOMMENDED_BLOCKS = 1000
@@ -237,6 +237,81 @@ def format_file_size(size_bytes: int) -> str:
     if size_bytes >= 1024:
         return f"{size_bytes / 1024:.0f} KB"
     return f"{size_bytes} B"
+
+
+def estimate_remaining_time(done: int, total: int, elapsed_seconds: float) -> str:
+    if done <= 0 or total <= 0 or done >= total or elapsed_seconds <= 0:
+        return ""
+    remaining_seconds = (elapsed_seconds / done) * max(total - done, 0)
+    return format_duration(remaining_seconds)
+
+
+def progress_text(done: int, total: int, elapsed_seconds: float | None = None) -> str:
+    percent = 100 if total <= 0 else min(int((done / total) * 100), 100)
+    text = f"{percent}%"
+    if elapsed_seconds is not None:
+        eta = estimate_remaining_time(done, total, elapsed_seconds)
+        if eta:
+            text += f" | ETA {eta}"
+    return text
+
+
+def elapsed_since_timestamp(timestamp_text: str) -> float | None:
+    try:
+        started_at = datetime.strptime(timestamp_text, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    return max((datetime.now() - started_at).total_seconds(), 0)
+
+
+def render_download_ready(data: bytes, file_name: str, mime: str, key: str = "download_ready") -> None:
+    st.success("Complete | Download ready")
+    st.download_button(
+        "Download Translated File",
+        data=data,
+        file_name=file_name,
+        mime=mime,
+        type="primary",
+        key=key,
+    )
+
+
+def start_background_translation_job(
+    raw_document: bytes,
+    file_name: str,
+    blocks: list[TextBlock],
+    glossary: pd.DataFrame,
+    translation_mode: str,
+    notify_email: str,
+    batch_count: int,
+    progress_path: Path,
+) -> str:
+    translatable_blocks = [block for block in blocks if should_translate(block.text)]
+    job_id = create_translation_job(
+        file_name,
+        len(raw_document),
+        len(blocks),
+        len(translatable_blocks),
+        batch_count,
+        translation_mode,
+        notify_email=notify_email,
+        status="pending",
+    )
+    source_path = job_upload_path(job_id, file_name)
+    source_path.write_bytes(raw_document)
+    update_translation_job(job_id, source_file_path=str(source_path))
+    background_job_executor().submit(
+        run_document_translation_job,
+        job_id,
+        raw_document,
+        file_name,
+        blocks,
+        glossary,
+        translation_mode,
+        progress_path,
+        batch_count,
+    )
+    return job_id
 
 
 def clean_office_xml_text(value: str) -> str:
@@ -1003,6 +1078,33 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, transl
     return chunk_translations, chunk_hits, token_usage
 
 
+def translate_batch_chunk_resilient(
+    chunk: list[TextBlock],
+    glossary: pd.DataFrame,
+    translation_mode: str,
+) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
+    try:
+        return translate_batch_chunk(chunk, glossary, translation_mode)
+    except Exception:
+        if len(chunk) <= 1:
+            raise
+
+    midpoint = max(len(chunk) // 2, 1)
+    combined_translations = {}
+    combined_hits = []
+    combined_usage = TokenUsage()
+    for part in (chunk[:midpoint], chunk[midpoint:]):
+        part_translations, part_hits, part_usage = translate_batch_chunk_resilient(
+            part,
+            glossary,
+            translation_mode,
+        )
+        combined_translations.update(part_translations)
+        combined_hits.extend(part_hits)
+        combined_usage.add(part_usage)
+    return combined_translations, combined_hits, combined_usage
+
+
 def translation_memory_key(text: str) -> str:
     return clean_text(text)
 
@@ -1066,7 +1168,7 @@ def translate_blocks_batch(
     if chunks:
         with ThreadPoolExecutor(max_workers=parallel_batches) as executor:
             future_to_chunk = {
-                executor.submit(translate_batch_chunk, chunk, glossary, translation_mode): chunk
+                executor.submit(translate_batch_chunk_resilient, chunk, glossary, translation_mode): chunk
                 for chunk in chunks
             }
 
@@ -1723,6 +1825,10 @@ def apply_compact_style() -> None:
         div[data-testid="stHorizontalBlock"] {
             align-items: center;
         }
+
+        div[data-testid="stProgress"] > div > div > div {
+            height: 14px;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1832,11 +1938,13 @@ def render_text_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> 
 
 
 def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> None:
+    st.caption("Mode")
     translation_mode = st.radio(
         "Translation mode",
         TRANSLATION_MODES,
         horizontal=True,
         key="document_translation_mode",
+        label_visibility="collapsed",
     )
 
     active_job_id = st.session_state.get("active_document_job_id")
@@ -1848,13 +1956,10 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             result_path = Path(result_path_text) if result_path_text else None
             if active_job["status"] == "completed" and result_path is not None and result_path.exists():
                 result_file_name = active_job["result_file_name"] or output_file_name(active_job["file_name"])
-                st.success("Large file complete. Download ready.")
-                st.download_button(
-                    "Download Translated File",
+                render_download_ready(
                     data=result_path.read_bytes(),
                     file_name=result_file_name,
                     mime=active_job["result_mime"] or mime_type(active_job["file_name"]),
-                    type="primary",
                     key=f"active_download_{active_job_id}",
                 )
                 if active_job["notify_email"]:
@@ -1863,25 +1968,54 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                         translation_mailto_link(active_job["notify_email"], active_job["file_name"], result_file_name),
                     )
             elif active_job["status"] == "failed":
-                st.error(f"Large file failed: {active_job['error_message'] or 'No error detail.'}")
+                st.error(f"Failed | {active_job['error_message'] or 'No error detail.'}")
+                if st.button("Retry", key=f"retry_{active_job_id}"):
+                    source_path_text = str(active_job.get("source_file_path") or "")
+                    source_path = Path(source_path_text) if source_path_text else None
+                    if source_path is None or not source_path.exists():
+                        st.warning("Source file not found.")
+                    else:
+                        retry_raw = source_path.read_bytes()
+                        retry_blocks = extract_text_blocks(retry_raw, active_job["file_name"])
+                        retry_mode = active_job["translation_mode"] or translation_mode
+                        retry_glossary = glossary_for_mode(glossary, plc_rules, retry_mode)
+                        retry_progress_path = checkpoint_path_for(active_job["file_name"], retry_raw, retry_mode)
+                        retry_batch_count = int(active_job["total_batches"] or 0)
+                        retry_job_id = start_background_translation_job(
+                            retry_raw,
+                            active_job["file_name"],
+                            retry_blocks,
+                            retry_glossary,
+                            retry_mode,
+                            active_job["notify_email"] or "",
+                            retry_batch_count,
+                            retry_progress_path,
+                        )
+                        st.session_state["active_document_job_id"] = retry_job_id
+                        rerun_app()
             else:
+                active_done = int(active_job["completed_blocks"] or 0)
+                active_total = int(active_job["translatable_blocks"] or 0)
+                active_elapsed = elapsed_since_timestamp(active_job.get("created_at", ""))
                 st.info(
-                    f"Large file running: {active_job['completed_blocks']}/{active_job['translatable_blocks']} JP blocks."
+                    f"Running | {active_done}/{active_total} JP blocks | "
+                    f"{progress_text(active_done, active_total, active_elapsed)}"
                 )
                 components.html("<script>setTimeout(() => window.parent.location.reload(), 15000);</script>", height=0)
 
+    st.caption("Upload")
     uploaded_document = st.file_uploader(
-        "Upload Japanese document",
+        "Upload Japanese document (Max 100 MB. Files over 5 MB or 1,000 text blocks may run in background)",
         type=["csv", "txt", "as", "docx", "xlsx", "xlsm"],
+        label_visibility="collapsed",
     )
 
     if uploaded_document is None:
-        st.info("Upload CSV, TXT, AS, Word, or Excel.")
         return
 
     raw_document = uploaded_document.getvalue()
     if len(raw_document) > MAX_UPLOAD_BYTES:
-        st.warning("This document is larger than the 50 MB safety limit. Please split the file or test with a smaller copy.")
+        st.warning("This document is larger than the 100 MB safety limit. Please split the file or test with a smaller copy.")
         return
 
     document_key = f"{document_fingerprint(uploaded_document.name, raw_document)}::{translation_mode}"
@@ -1925,10 +2059,11 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
     )
     stat_cols = st.columns(4)
     stat_cols[0].metric("Size", format_file_size(len(raw_document)))
-    stat_cols[1].metric("Text blocks", len(blocks))
-    stat_cols[2].metric("JP blocks", len(translatable_blocks))
+    stat_cols[1].metric("Text", len(blocks))
+    stat_cols[2].metric("JP", len(translatable_blocks))
     stat_cols[3].metric("Batches", batch_count)
 
+    st.caption("Delivery")
     smtp_configured = is_smtp_configured()
     delivery_options = ["Download only", "Auto email" if smtp_configured else "Email draft"]
     delivery_choice = st.radio(
@@ -1936,24 +2071,27 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
         delivery_options,
         index=1 if size_or_block_recommendation else 0,
         horizontal=True,
+        label_visibility="collapsed",
     )
     notify_email = ""
     if delivery_choice != "Download only":
         notify_email = st.text_input("Email", placeholder="name@example.com").strip()
-    if size_or_block_recommendation:
-        st.caption("Large file: background job recommended.")
-
     if len(blocks) >= 1000:
-        st.info("Large file mode")
+        st.info("Large file mode | Background job")
 
+    st.caption("Progress")
     initial_ratio = 1.0 if not translatable_blocks else min(saved_count / len(translatable_blocks), 1.0)
-    progress = st.progress(initial_ratio)
+    progress_col, progress_text_col, _ = st.columns([0.34, 0.22, 0.44])
+    with progress_col:
+        progress = st.progress(initial_ratio)
+    progress_info = progress_text_col.empty()
     status = st.empty()
     metrics = st.empty()
+    progress_info.write(progress_text(saved_count, len(translatable_blocks)))
     if saved_count:
-        status.write("Saved progress found.")
+        status.write("Resume available")
     metrics.write(
-        f"{saved_count}/{len(translatable_blocks)} saved. {batch_count} batch(es)."
+        f"Ready | {saved_count}/{len(translatable_blocks)} saved | {batch_count} batch(es)"
     )
 
     action_col, clear_col, _ = st.columns([0.28, 0.22, 0.5])
@@ -2025,35 +2163,22 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             st.session_state["translated_document_preview"] = []
             st.session_state["translated_document_terms"] = []
             progress.progress(1.0)
-            status.success("Download ready.")
+            progress_info.write("100%")
+            status.success("Complete | Download ready")
         elif size_or_block_recommendation:
-            job_id = create_translation_job(
-                uploaded_document.name,
-                len(raw_document),
-                len(blocks),
-                len(translatable_blocks),
-                batch_count,
-                translation_mode,
-                notify_email=notify_email,
-                status="pending",
-            )
-            source_path = job_upload_path(job_id, uploaded_document.name)
-            source_path.write_bytes(raw_document)
-            update_translation_job(job_id, source_file_path=str(source_path))
-            background_job_executor().submit(
-                run_document_translation_job,
-                job_id,
+            job_id = start_background_translation_job(
                 raw_document,
                 uploaded_document.name,
                 blocks,
                 active_glossary,
                 translation_mode,
-                progress_path,
+                notify_email,
                 batch_count,
+                progress_path,
             )
             st.session_state["active_document_job_id"] = job_id
-            status.success(f"Large file job started: {job_id}")
-            metrics.write("This page checks every 15 seconds. Download appears here when complete.")
+            status.success("Running | Background job")
+            metrics.write("Auto-refresh every 15s | Download appears here")
         else:
             job_id = create_translation_job(
                 uploaded_document.name,
@@ -2072,8 +2197,9 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             def update_foreground_progress(done, total, done_batches, total_batches, elapsed, message):
                 ratio = 1.0 if total == 0 else min(done / total, 1.0)
                 progress.progress(ratio)
+                progress_info.write(progress_text(done, total, elapsed))
                 status.write(message)
-                metrics.write(f"{done}/{total} JP blocks. {done_batches}/{total_batches} batch(es).")
+                metrics.write(f"Running | {done}/{total} JP blocks | {done_batches}/{total_batches} batch(es)")
                 update_translation_job(
                     job_id,
                     status="running",
@@ -2127,8 +2253,9 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 st.session_state["translated_document_preview"] = []
                 st.session_state["translated_document_terms"] = []
                 progress.progress(1.0)
-                status.success("Download ready.")
-                metrics.write("Translation complete.")
+                progress_info.write("100%")
+                status.success("Complete | Download ready")
+                metrics.write("Complete")
             except Exception as exc:
                 update_translation_job(
                     job_id,
@@ -2140,38 +2267,28 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 st.error(f"Translation failed: {format_translation_error(exc)}")
 
     if st.session_state.get("translated_document_bytes"):
-        st.success("Download ready. Click the button below to save the translated file.")
-        st.download_button(
-            "Download Translated File",
+        render_download_ready(
             data=st.session_state["translated_document_bytes"],
             file_name=st.session_state["translated_document_name"],
             mime=st.session_state["translated_document_mime"],
-            type="primary",
         )
 
 
 
 load_env()
 
-st.set_page_config(page_title="JP to EN Translator", layout="wide")
+st.set_page_config(page_title="Battery Plant JP-EN Translator", layout="wide")
 apply_compact_style()
 usage_count = increment_usage_count_once()
-st.title("JP to EN Plant Translator")
-st.caption("Type Japanese text or upload Word, Excel, or TXT files. The app applies company terminology first, then translates with OpenAI API.")
-st.warning(
-    "Data notice: Text entered or uploaded in this app is sent to OpenAI API for translation. "
-    "Do not upload confidential or restricted information unless approved by company policy.",
-)
+st.title("Battery Plant JP-EN Translator")
 
 with st.sidebar:
     st.metric("App use times", usage_count)
-    st.header("Knowledge Base")
-    st.success("Internal glossary is already loaded.")
-    st.code(glossary_version_text(), language="text")
-    st.success("PLC/SPLC rules are controlled by the app owner.")
-    st.code(plc_rules_version_text(), language="text")
-    st.caption("Users choose a translation mode. Glossary and PLC rules are managed as controlled internal files.")
-    st.caption("For demo testing, please use small documents to avoid unnecessary OpenAI API cost.")
+    st.header("Knowledge")
+    with st.expander("Glossary"):
+        st.code(glossary_version_text(), language="text")
+    with st.expander("PLC rules"):
+        st.code(plc_rules_version_text(), language="text")
 
 try:
     glossary = normalize_glossary(read_glossary(None))
