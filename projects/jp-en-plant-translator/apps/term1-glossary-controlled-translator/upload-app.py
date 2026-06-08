@@ -1,9 +1,12 @@
 import csv
+import mimetypes
+import html
 import io
 import hashlib
 import json
 import os
 import re
+import smtplib
 import sqlite3
 import time
 import unicodedata
@@ -11,12 +14,15 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
+from urllib.parse import quote
 from zipfile import BadZipFile, ZipFile, ZIP_DEFLATED
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from openpyxl import load_workbook
 from openai import APIConnectionError, APIStatusError, AuthenticationError, OpenAI, RateLimitError
@@ -43,6 +49,9 @@ MAX_PARALLEL_BATCHES = 3
 MAX_TRANSLATION_RETRIES = 3
 OPENAI_TIMEOUT_SECONDS = 120
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024
+EMAIL_DRAFT_RECOMMENDED_BYTES = 5 * 1024 * 1024
+EMAIL_DRAFT_RECOMMENDED_BLOCKS = 1000
 PROGRESS_DIR = BASE_DIR / ".term1_progress"
 USAGE_COUNT_PATH = BASE_DIR / ".term1_usage_count.json"
 JOB_DB_PATH = BASE_DIR / ".term1_jobs.db"
@@ -78,6 +87,15 @@ LEADING_CODE_PATTERN = re.compile(r"^([A-Z]{1,6}[-_]?\d{1,6}[A-Z]?)(.*)$")
 WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 PPT_NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
 EXCEL_NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+EXCEL_SERIALIZE_NAMESPACES = {
+    "": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    "x14ac": "http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac",
+    "xr": "http://schemas.microsoft.com/office/spreadsheetml/2014/revision",
+    "xr2": "http://schemas.microsoft.com/office/spreadsheetml/2015/revision2",
+    "xr3": "http://schemas.microsoft.com/office/spreadsheetml/2016/revision3",
+}
 
 
 @dataclass(frozen=True)
@@ -213,6 +231,23 @@ def format_duration(seconds: float) -> str:
     return f"{second}s"
 
 
+def format_file_size(size_bytes: int) -> str:
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    if size_bytes >= 1024:
+        return f"{size_bytes / 1024:.0f} KB"
+    return f"{size_bytes} B"
+
+
+def clean_office_xml_text(value: str) -> str:
+    # Office XML files cannot contain most control characters.
+    return "".join(
+        char
+        for char in str(value)
+        if char in "\t\n\r" or ord(char) >= 32
+    )
+
+
 def rerun_app() -> None:
     rerun = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
     if rerun:
@@ -276,7 +311,14 @@ def init_job_store() -> None:
             conn.execute(
                 "ALTER TABLE translation_jobs ADD COLUMN translation_mode TEXT DEFAULT ''"
             )
-        for column_name in ("source_file_path", "result_file_path", "result_mime", "progress_message"):
+        for column_name in (
+            "source_file_path",
+            "result_file_path",
+            "result_mime",
+            "progress_message",
+            "notify_email",
+            "notification_status",
+        ):
             if column_name not in columns:
                 conn.execute(
                     f"ALTER TABLE translation_jobs ADD COLUMN {column_name} TEXT DEFAULT ''"
@@ -293,6 +335,7 @@ def create_translation_job(
     source_file_path: str = "",
     result_file_path: str = "",
     result_mime: str = "",
+    notify_email: str = "",
     status: str = "running",
 ) -> str:
     init_job_store()
@@ -305,9 +348,9 @@ def create_translation_job(
                 job_id, file_name, file_size_bytes, translation_mode, status,
                 source_file_path, result_file_path, result_mime, total_blocks,
                 translatable_blocks, completed_blocks, total_batches,
-                completed_batches, created_at, updated_at
+                completed_batches, notify_email, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -323,6 +366,7 @@ def create_translation_job(
                 0,
                 total_batches,
                 0,
+                notify_email,
                 now,
                 now,
             ),
@@ -345,6 +389,8 @@ def update_translation_job(job_id: str, **fields) -> None:
         "source_file_path",
         "result_file_path",
         "result_mime",
+        "notify_email",
+        "notification_status",
         "progress_message",
         "error_message",
         "finished_at",
@@ -371,7 +417,6 @@ def recent_translation_jobs(limit: int = 10) -> pd.DataFrame:
                 status AS "Status",
                 completed_blocks || '/' || translatable_blocks AS "Blocks",
                 completed_batches || '/' || total_batches AS "Batches",
-                total_tokens AS "Tokens",
                 result_file_name AS "Result",
                 updated_at AS "Updated"
             FROM translation_jobs
@@ -396,6 +441,8 @@ def translation_job_detail(job_id: str) -> pd.DataFrame:
                 source_file_path,
                 result_file_path,
                 result_mime,
+                notify_email,
+                notification_status,
                 progress_message,
                 status,
                 total_blocks,
@@ -1265,7 +1312,7 @@ def extract_xlsx_blocks(raw: bytes) -> list[TextBlock]:
 def replace_text_in_paragraph(paragraph: ET.Element, text_nodes: list[ET.Element], translated_text: str) -> None:
     if not text_nodes:
         return
-    text_nodes[0].text = translated_text
+    text_nodes[0].text = clean_office_xml_text(translated_text)
     for node in text_nodes[1:]:
         node.text = ""
 
@@ -1332,7 +1379,33 @@ def replace_excel_cell_text(cell: ET.Element, translated_text: str) -> None:
     cell.attrib["t"] = "inlineStr"
     inline_string = ET.SubElement(cell, f"{{{EXCEL_NS['a']}}}is")
     text_node = ET.SubElement(inline_string, f"{{{EXCEL_NS['a']}}}t")
-    text_node.text = translated_text
+    text_node.text = clean_office_xml_text(translated_text)
+
+
+def serialize_excel_xml(root: ET.Element) -> bytes:
+    used_uris = set()
+    for element in root.iter():
+        if element.tag.startswith("{"):
+            used_uris.add(element.tag[1:].split("}", 1)[0])
+        for attr_name in element.attrib:
+            if attr_name.startswith("{"):
+                used_uris.add(attr_name[1:].split("}", 1)[0])
+
+    ignorable_attr = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Ignorable"
+    if ignorable_attr in root.attrib:
+        kept_prefixes = [
+            prefix
+            for prefix in root.attrib[ignorable_attr].split()
+            if EXCEL_SERIALIZE_NAMESPACES.get(prefix) in used_uris
+        ]
+        if kept_prefixes:
+            root.attrib[ignorable_attr] = " ".join(kept_prefixes)
+        else:
+            root.attrib.pop(ignorable_attr, None)
+
+    for prefix, uri in EXCEL_SERIALIZE_NAMESPACES.items():
+        ET.register_namespace(prefix, uri)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 def build_translated_xlsx(raw: bytes, translations: dict[str, str]) -> bytes:
@@ -1348,7 +1421,7 @@ def build_translated_xlsx(raw: bytes, translations: dict[str, str]) -> bytes:
                     key = f"{item.filename}#{cell.attrib.get('r', '')}"
                     if key in translations:
                         replace_excel_cell_text(cell, translations[key])
-                data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                data = serialize_excel_xml(root)
             output_zip.writestr(item, data)
 
     return target.getvalue()
@@ -1395,6 +1468,91 @@ def job_result_path(job_id: str, file_name: str) -> Path:
     return JOB_RESULT_DIR / f"{job_id}_{safe_storage_name(translated_name)}"
 
 
+def is_valid_email(value: str) -> bool:
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value.strip()))
+
+
+def is_smtp_configured() -> bool:
+    smtp_host = os.getenv("SMTP_HOST", "").strip()
+    smtp_from = os.getenv("SMTP_FROM", os.getenv("SMTP_USERNAME", "")).strip()
+    return bool(smtp_host and smtp_from)
+
+
+def manual_email_status() -> str:
+    return "Manual email draft ready. Download the translated file and attach it yourself."
+
+
+def translation_mailto_link(to_email: str, file_name: str, result_file_name: str) -> str:
+    subject = f"Term1 translation completed: {result_file_name}"
+    body = "\n".join(
+        [
+            "Your Term1 translation job is complete.",
+            "",
+            f"Source file: {file_name}",
+            f"Translated file: {result_file_name}",
+            "",
+            "Please attach the downloaded translated file before sending this email.",
+        ]
+    )
+    return f"mailto:{quote(to_email)}?subject={quote(subject)}&body={quote(body)}"
+
+
+def send_completed_translation_email(to_email: str, file_name: str, result_path: Path, result_file_name: str) -> str:
+    if not to_email:
+        return ""
+    if not is_valid_email(to_email):
+        return "Invalid email address."
+
+    smtp_host = os.getenv("SMTP_HOST", "").strip()
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USERNAME", "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "")
+    smtp_from = os.getenv("SMTP_FROM", smtp_user).strip()
+    smtp_tls = os.getenv("SMTP_TLS", "true").lower() in {"1", "true", "yes"}
+
+    if not smtp_host or not smtp_from:
+        return manual_email_status()
+    if not result_path.exists():
+        return "Email not sent: translated file was not found."
+    if result_path.stat().st_size > MAX_EMAIL_ATTACHMENT_BYTES:
+        return "Email not sent: translated file is larger than the email attachment limit. Download it from the app."
+
+    message = EmailMessage()
+    message["From"] = smtp_from
+    message["To"] = to_email
+    message["Subject"] = f"Term1 translation completed: {result_file_name}"
+    message.set_content(
+        "\n".join(
+            [
+                "Your Term1 translation job is complete.",
+                "",
+                f"Source file: {file_name}",
+                f"Translated file: {result_file_name}",
+                "",
+                "The translated file is attached.",
+            ]
+        )
+    )
+
+    content_type, _ = mimetypes.guess_type(result_file_name)
+    maintype, subtype = (content_type or "application/octet-stream").split("/", 1)
+    message.add_attachment(
+        result_path.read_bytes(),
+        maintype=maintype,
+        subtype=subtype,
+        filename=result_file_name,
+    )
+
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+        if smtp_tls:
+            server.starttls()
+        if smtp_user and smtp_password:
+            server.login(smtp_user, smtp_password)
+        server.send_message(message)
+
+    return "Email sent."
+
+
 @st.cache_resource
 def background_job_executor() -> ThreadPoolExecutor:
     return ThreadPoolExecutor(max_workers=2)
@@ -1434,6 +1592,24 @@ def run_document_translation_job(
         translated_name = output_file_name(file_name)
         result_path = job_result_path(job_id, file_name)
         result_path.write_bytes(translated_document)
+        notify_email = ""
+        with sqlite3.connect(JOB_DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT notify_email FROM translation_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            notify_email = row[0] if row and row[0] else ""
+        notification_status = ""
+        if notify_email:
+            try:
+                notification_status = send_completed_translation_email(
+                    notify_email,
+                    file_name,
+                    result_path,
+                    translated_name,
+                )
+            except Exception as exc:
+                notification_status = f"Email failed: {exc}"
         update_translation_job(
             job_id,
             status="completed",
@@ -1445,6 +1621,7 @@ def run_document_translation_job(
             result_file_name=translated_name,
             result_file_path=str(result_path),
             result_mime=mime_type(translated_name),
+            notification_status=notification_status,
             progress_message=f"Completed in {format_duration(time.time() - started_at)}.",
             finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         )
@@ -1552,6 +1729,58 @@ def apply_compact_style() -> None:
     )
 
 
+def render_translation_result(translated_text: str) -> None:
+    escaped_text = html.escape(translated_text)
+    js_text = json.dumps(translated_text)
+    line_count = max(translated_text.count("\n") + 1, 4)
+    height = min(max(210, line_count * 28 + 92), 520)
+    components.html(
+        f"""
+        <div style="font-family: Arial, sans-serif;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;">
+            <div style="font-size:18px;font-weight:700;color:#111827;">English Translation</div>
+            <button
+              id="copyTranslation"
+              style="border:1px solid #cbd5e1;background:#ffffff;color:#111827;border-radius:4px;padding:7px 12px;font-size:14px;cursor:pointer;"
+            >
+              Copy
+            </button>
+          </div>
+          <div
+            style="white-space:pre-wrap;border:1px solid #d0d7de;border-radius:6px;background:#ffffff;color:#111827;padding:18px;font-size:20px;line-height:1.65;min-height:150px;max-height:380px;overflow-y:auto;"
+          >{escaped_text}</div>
+        </div>
+        <script>
+          const copyButton = document.getElementById("copyTranslation");
+          const translationText = {js_text};
+          copyButton.addEventListener("click", async () => {{
+            try {{
+              if (navigator.clipboard && window.isSecureContext) {{
+                await navigator.clipboard.writeText(translationText);
+              }} else {{
+                const textArea = document.createElement("textarea");
+                textArea.value = translationText;
+                textArea.style.position = "fixed";
+                textArea.style.left = "-9999px";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                document.execCommand("copy");
+                document.body.removeChild(textArea);
+              }}
+              copyButton.textContent = "Copied";
+              setTimeout(() => copyButton.textContent = "Copy", 1400);
+            }} catch (error) {{
+              copyButton.textContent = "Copy failed";
+              setTimeout(() => copyButton.textContent = "Copy", 1800);
+            }}
+          }});
+        </script>
+        """,
+        height=height,
+    )
+
+
 def render_text_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> None:
     translation_mode = st.radio(
         "Translation mode",
@@ -1581,11 +1810,9 @@ def render_text_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> 
             translated_text, hits, token_usage = translate_block(jp_text, active_glossary, translation_mode)
             progress.progress(1.0)
             status.success("Translation complete.")
-            st.caption(token_usage.display())
             if token_usage.total_tokens == 0 and hits:
                 st.success("Translated by controlled rule. OpenAI API was not called.")
-            st.subheader("English Translation")
-            st.write(translated_text)
+            render_translation_result(translated_text)
 
             st.download_button(
                 "Download translation",
@@ -1605,59 +1832,43 @@ def render_text_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> 
 
 
 def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> None:
-    st.info("Accepted document types: CSV (.csv), Text (.txt/.as), Word (.docx), and Excel (.xlsx/.xlsm). Large file safety limit: 50 MB.")
     translation_mode = st.radio(
         "Translation mode",
         TRANSLATION_MODES,
         horizontal=True,
-        help="Use PLC/SPLC mode for device comments and controls labels. Use General mode for normal plant documents.",
         key="document_translation_mode",
     )
-    with st.expander("Recent Translation Jobs"):
-        jobs = recent_translation_jobs()
-        if jobs.empty:
-            st.info("No translation jobs recorded yet.")
-        else:
-            st.dataframe(jobs, use_container_width=True, hide_index=True)
-            selected_job = st.selectbox(
-                "View job details",
-                options=[""] + jobs["Job ID"].tolist(),
-                format_func=lambda value: "Select a job" if value == "" else value,
-            )
-            if selected_job:
-                detail = translation_job_detail(selected_job)
-                if detail.empty:
-                    st.warning("Job detail was not found.")
-                else:
-                    job = detail.iloc[0].to_dict()
-                    detail_rows = [
-                        {"Field": "Job ID", "Value": job["job_id"]},
-                        {"Field": "File", "Value": job["file_name"]},
-                        {"Field": "File size", "Value": f"{job['file_size_bytes']:,} bytes"},
-                        {"Field": "Mode", "Value": job["translation_mode"] or "Not recorded"},
-                        {"Field": "Status", "Value": job["status"]},
-                        {"Field": "Blocks", "Value": f"{job['completed_blocks']}/{job['translatable_blocks']} translated ({job['total_blocks']} total text blocks)"},
-                        {"Field": "Batches", "Value": f"{job['completed_batches']}/{job['total_batches']}"},
-                        {"Field": "Tokens", "Value": f"input {job['input_tokens']:,}, output {job['output_tokens']:,}, total {job['total_tokens']:,}"},
-                        {"Field": "Result", "Value": job["result_file_name"] or "Not ready"},
-                        {"Field": "Created", "Value": job["created_at"]},
-                        {"Field": "Updated", "Value": job["updated_at"]},
-                        {"Field": "Finished", "Value": job["finished_at"] or "Not finished"},
-                        {"Field": "Progress message", "Value": job["progress_message"] or "None"},
-                        {"Field": "Error", "Value": job["error_message"] or "None"},
-                    ]
-                    st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
-                    result_path_text = str(job.get("result_file_path") or "")
-                    result_path = Path(result_path_text) if result_path_text else None
-                    if job["status"] == "completed" and result_path is not None and result_path.exists():
-                        st.download_button(
-                            "Download Completed Job",
-                            data=result_path.read_bytes(),
-                            file_name=job["result_file_name"] or output_file_name(job["file_name"]),
-                            mime=job["result_mime"] or mime_type(job["file_name"]),
-                            type="primary",
-                            key=f"download_{job['job_id']}",
-                        )
+
+    active_job_id = st.session_state.get("active_document_job_id")
+    if active_job_id:
+        detail = translation_job_detail(active_job_id)
+        if not detail.empty:
+            active_job = detail.iloc[0].to_dict()
+            result_path_text = str(active_job.get("result_file_path") or "")
+            result_path = Path(result_path_text) if result_path_text else None
+            if active_job["status"] == "completed" and result_path is not None and result_path.exists():
+                result_file_name = active_job["result_file_name"] or output_file_name(active_job["file_name"])
+                st.success("Large file complete. Download ready.")
+                st.download_button(
+                    "Download Translated File",
+                    data=result_path.read_bytes(),
+                    file_name=result_file_name,
+                    mime=active_job["result_mime"] or mime_type(active_job["file_name"]),
+                    type="primary",
+                    key=f"active_download_{active_job_id}",
+                )
+                if active_job["notify_email"]:
+                    st.link_button(
+                        "Open Email Draft",
+                        translation_mailto_link(active_job["notify_email"], active_job["file_name"], result_file_name),
+                    )
+            elif active_job["status"] == "failed":
+                st.error(f"Large file failed: {active_job['error_message'] or 'No error detail.'}")
+            else:
+                st.info(
+                    f"Large file running: {active_job['completed_blocks']}/{active_job['translatable_blocks']} JP blocks."
+                )
+                components.html("<script>setTimeout(() => window.parent.location.reload(), 15000);</script>", height=0)
 
     uploaded_document = st.file_uploader(
         "Upload Japanese document",
@@ -1665,7 +1876,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
     )
 
     if uploaded_document is None:
-        st.info("Upload a CSV, TXT, AS, Word, or Excel file to start.")
+        st.info("Upload CSV, TXT, AS, Word, or Excel.")
         return
 
     raw_document = uploaded_document.getvalue()
@@ -1681,6 +1892,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
         st.session_state.pop("translated_document_mime", None)
         st.session_state.pop("translated_document_preview", None)
         st.session_state.pop("translated_document_terms", None)
+        st.session_state.pop("active_document_job_id", None)
         st.session_state["translated_document_key"] = document_key
 
     try:
@@ -1689,7 +1901,6 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
         st.error(f"Document error: {exc}")
         return
 
-    st.subheader("Document Text Blocks")
     translatable_blocks = [block for block in blocks if should_translate(block.text)]
     unique_translatable_count = len({translation_memory_key(block.text) for block in translatable_blocks})
     saved_translations = load_checkpoint(progress_path)
@@ -1708,35 +1919,42 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
     )
     batch_count = (pending_unique_count + DOCUMENT_BATCH_SIZE - 1) // DOCUMENT_BATCH_SIZE
 
-    st.write(
-        f"Detected {len(blocks)} text block(s). "
-        f"{len(translatable_blocks)} need Japanese translation. "
-        f"{unique_translatable_count} unique Japanese phrase(s). "
-        f"{saved_count} already saved. "
-        f"{pending_unique_count} unique phrase(s) still need API translation. "
-        f"{batch_count} batch(es) remaining. "
-        f"Batch size: {DOCUMENT_BATCH_SIZE}. "
-        f"Parallel batches: {max_parallel_batches()}."
+    size_or_block_recommendation = (
+        len(raw_document) >= EMAIL_DRAFT_RECOMMENDED_BYTES
+        or len(blocks) >= EMAIL_DRAFT_RECOMMENDED_BLOCKS
     )
+    stat_cols = st.columns(4)
+    stat_cols[0].metric("Size", format_file_size(len(raw_document)))
+    stat_cols[1].metric("Text blocks", len(blocks))
+    stat_cols[2].metric("JP blocks", len(translatable_blocks))
+    stat_cols[3].metric("Batches", batch_count)
+
+    smtp_configured = is_smtp_configured()
+    delivery_options = ["Download only", "Auto email" if smtp_configured else "Email draft"]
+    delivery_choice = st.radio(
+        "Delivery",
+        delivery_options,
+        index=1 if size_or_block_recommendation else 0,
+        horizontal=True,
+    )
+    notify_email = ""
+    if delivery_choice != "Download only":
+        notify_email = st.text_input("Email", placeholder="name@example.com").strip()
+    if size_or_block_recommendation:
+        st.caption("Large file: background job recommended.")
 
     if len(blocks) >= 1000:
-        st.info("Large File Mode is active: the app skips non-Japanese cells and saves progress after every batch.")
+        st.info("Large file mode")
 
     initial_ratio = 1.0 if not translatable_blocks else min(saved_count / len(translatable_blocks), 1.0)
     progress = st.progress(initial_ratio)
     status = st.empty()
     metrics = st.empty()
     if saved_count:
-        status.write("Saved progress found. Click Translate Document to resume.")
+        status.write("Saved progress found.")
     metrics.write(
-        f"Progress: {saved_count}/{len(translatable_blocks)} Japanese block(s) saved. "
-        f"{batch_count} batch(es) remaining. "
-        f"Batch size: {DOCUMENT_BATCH_SIZE}. "
-        f"Parallel batches: {max_parallel_batches()}."
+        f"{saved_count}/{len(translatable_blocks)} saved. {batch_count} batch(es)."
     )
-
-    preview_rows = [{"Location": block.location, "Japanese Text": block.text[:300]} for block in blocks[:20]]
-    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
 
     action_col, clear_col, _ = st.columns([0.28, 0.22, 0.5])
     with action_col:
@@ -1758,6 +1976,9 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
     if translate_clicked:
         job_id = ""
         active_glossary = glossary_for_mode(glossary, plc_rules, translation_mode)
+        if notify_email and not is_valid_email(notify_email):
+            st.warning("Please enter a valid email address, or leave the email field blank.")
+            return
         if not blocks:
             st.warning(
                 "No translatable text was found in this document. "
@@ -1769,11 +1990,33 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             st.info("No Japanese text was found. Downloading the original document is enough.")
             translated_document = build_translated_document(raw_document, uploaded_document.name, {}, blocks)
             translated_name = output_file_name(uploaded_document.name)
-            job_id = create_translation_job(uploaded_document.name, len(raw_document), len(blocks), 0, 0, translation_mode)
+            job_id = create_translation_job(
+                uploaded_document.name,
+                len(raw_document),
+                len(blocks),
+                0,
+                0,
+                translation_mode,
+                notify_email=notify_email,
+            )
+            notification_status = ""
+            if notify_email:
+                result_path = job_result_path(job_id, uploaded_document.name)
+                result_path.write_bytes(translated_document)
+                try:
+                    notification_status = send_completed_translation_email(
+                        notify_email,
+                        uploaded_document.name,
+                        result_path,
+                        translated_name,
+                    )
+                except Exception as exc:
+                    notification_status = f"Email failed: {exc}"
             update_translation_job(
                 job_id,
                 status="completed",
                 result_file_name=translated_name,
+                notification_status=notification_status,
                 finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
             )
             st.session_state["translated_document_bytes"] = translated_document
@@ -1781,36 +2024,120 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             st.session_state["translated_document_mime"] = mime_type(translated_name)
             st.session_state["translated_document_preview"] = []
             st.session_state["translated_document_terms"] = []
-            return
+            progress.progress(1.0)
+            status.success("Download ready.")
+        elif size_or_block_recommendation:
+            job_id = create_translation_job(
+                uploaded_document.name,
+                len(raw_document),
+                len(blocks),
+                len(translatable_blocks),
+                batch_count,
+                translation_mode,
+                notify_email=notify_email,
+                status="pending",
+            )
+            source_path = job_upload_path(job_id, uploaded_document.name)
+            source_path.write_bytes(raw_document)
+            update_translation_job(job_id, source_file_path=str(source_path))
+            background_job_executor().submit(
+                run_document_translation_job,
+                job_id,
+                raw_document,
+                uploaded_document.name,
+                blocks,
+                active_glossary,
+                translation_mode,
+                progress_path,
+                batch_count,
+            )
+            st.session_state["active_document_job_id"] = job_id
+            status.success(f"Large file job started: {job_id}")
+            metrics.write("This page checks every 15 seconds. Download appears here when complete.")
+        else:
+            job_id = create_translation_job(
+                uploaded_document.name,
+                len(raw_document),
+                len(blocks),
+                len(translatable_blocks),
+                batch_count,
+                translation_mode,
+                notify_email=notify_email,
+                status="running",
+            )
+            source_path = job_upload_path(job_id, uploaded_document.name)
+            source_path.write_bytes(raw_document)
+            update_translation_job(job_id, source_file_path=str(source_path))
 
-        job_id = create_translation_job(
-            uploaded_document.name,
-            len(raw_document),
-            len(blocks),
-            len(translatable_blocks),
-            batch_count,
-            translation_mode,
-            status="pending",
-        )
-        source_path = job_upload_path(job_id, uploaded_document.name)
-        source_path.write_bytes(raw_document)
-        update_translation_job(job_id, source_file_path=str(source_path))
-        background_job_executor().submit(
-            run_document_translation_job,
-            job_id,
-            raw_document,
-            uploaded_document.name,
-            blocks,
-            active_glossary,
-            translation_mode,
-            progress_path,
-            batch_count,
-        )
-        status.success(f"Background job started: {job_id}")
-        metrics.write(
-            "You can refresh this page while the background job runs. "
-            "Open Recent Translation Jobs to check progress and download the completed file."
-        )
+            def update_foreground_progress(done, total, done_batches, total_batches, elapsed, message):
+                ratio = 1.0 if total == 0 else min(done / total, 1.0)
+                progress.progress(ratio)
+                status.write(message)
+                metrics.write(f"{done}/{total} JP blocks. {done_batches}/{total_batches} batch(es).")
+                update_translation_job(
+                    job_id,
+                    status="running",
+                    completed_blocks=done,
+                    completed_batches=done_batches,
+                    progress_message=message,
+                )
+
+            started_at = time.time()
+            try:
+                translations, all_hits, token_usage = translate_blocks_batch(
+                    blocks,
+                    active_glossary,
+                    translation_mode,
+                    checkpoint_path=progress_path,
+                    progress_callback=update_foreground_progress,
+                )
+                translated_document = build_translated_document(raw_document, uploaded_document.name, translations, blocks)
+                translated_name = output_file_name(uploaded_document.name)
+                result_path = job_result_path(job_id, uploaded_document.name)
+                result_path.write_bytes(translated_document)
+                notification_status = ""
+                if notify_email:
+                    try:
+                        notification_status = send_completed_translation_email(
+                            notify_email,
+                            uploaded_document.name,
+                            result_path,
+                            translated_name,
+                        )
+                    except Exception as exc:
+                        notification_status = f"Email failed: {exc}"
+                update_translation_job(
+                    job_id,
+                    status="completed",
+                    completed_blocks=len(translatable_blocks),
+                    completed_batches=batch_count,
+                    input_tokens=token_usage.input_tokens,
+                    output_tokens=token_usage.output_tokens,
+                    total_tokens=token_usage.total_tokens,
+                    result_file_name=translated_name,
+                    result_file_path=str(result_path),
+                    result_mime=mime_type(translated_name),
+                    notification_status=notification_status,
+                    progress_message=f"Completed in {format_duration(time.time() - started_at)}.",
+                    finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                st.session_state["translated_document_bytes"] = translated_document
+                st.session_state["translated_document_name"] = translated_name
+                st.session_state["translated_document_mime"] = mime_type(translated_name)
+                st.session_state["translated_document_preview"] = []
+                st.session_state["translated_document_terms"] = []
+                progress.progress(1.0)
+                status.success("Download ready.")
+                metrics.write("Translation complete.")
+            except Exception as exc:
+                update_translation_job(
+                    job_id,
+                    status="failed",
+                    error_message=format_translation_error(exc),
+                    finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                status.error("Translation failed.")
+                st.error(f"Translation failed: {format_translation_error(exc)}")
 
     if st.session_state.get("translated_document_bytes"):
         st.success("Download ready. Click the button below to save the translated file.")
@@ -1822,19 +2149,6 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             type="primary",
         )
 
-        st.subheader("Translation Preview")
-        st.dataframe(
-            pd.DataFrame(st.session_state.get("translated_document_preview", [])),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        all_hits = st.session_state.get("translated_document_terms", [])
-        if all_hits:
-            st.subheader("Detected Terminology")
-            st.dataframe(terminology_report(all_hits), use_container_width=True, hide_index=True)
-        else:
-            st.info("No glossary terms were detected in this document.")
 
 
 load_env()
@@ -1850,7 +2164,7 @@ st.warning(
 )
 
 with st.sidebar:
-    st.metric("App uses", usage_count)
+    st.metric("App use times", usage_count)
     st.header("Knowledge Base")
     st.success("Internal glossary is already loaded.")
     st.code(glossary_version_text(), language="text")
