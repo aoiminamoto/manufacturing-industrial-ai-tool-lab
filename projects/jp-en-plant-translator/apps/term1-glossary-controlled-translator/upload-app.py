@@ -1939,7 +1939,7 @@ def render_text_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> 
         key="text_translation_mode",
     )
     jp_text = st.text_area(
-        "Paste Japanese text",
+        "Input or paste Japanese text",
         height=220,
         placeholder="例: 稼働モニで設備異常を確認してください。",
     )
