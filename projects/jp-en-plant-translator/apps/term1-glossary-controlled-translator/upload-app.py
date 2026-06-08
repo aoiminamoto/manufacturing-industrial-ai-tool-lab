@@ -1766,9 +1766,9 @@ def glossary_version_text() -> str:
             "Version: v1.0",
             f"Terms: {term_count_text}",
             f"Last Updated: {modified_text}",
-            "Maintained By: Aoi Minamoto",
+            "Owner: Aoi Minamoto",
             "",
-            "Source File: glossary.xlsx",
+            "Source: glossary.xlsx",
         ]
     )
 
@@ -1792,11 +1792,14 @@ def plc_rules_version_text() -> str:
 
     return "\n".join(
         [
-            f"PLC rules file: {rule_path.name}",
-            f"Last updated: {modified_text}",
-            "Updated by: Aoi Minamoto",
-            f"PLC rules: {rule_count}",
-            f"Version hash: {digest}",
+            "PLC Rules Information",
+            "",
+            "Version: v1.0",
+            f"Rules: {rule_count}",
+            f"Last Updated: {modified_text}",
+            "Owner: Aoi Minamoto",
+            "",
+            f"Source: {rule_path.name}",
         ]
     )
 
@@ -2288,7 +2291,7 @@ st.title("Battery Plant JP-EN Translator")
 
 with st.sidebar:
     st.metric("App use times", usage_count)
-    st.header("Knowledge")
+    st.header("Knowledge Base")
     with st.expander("Glossary"):
         st.code(glossary_version_text(), language="text")
     with st.expander("PLC rules"):
