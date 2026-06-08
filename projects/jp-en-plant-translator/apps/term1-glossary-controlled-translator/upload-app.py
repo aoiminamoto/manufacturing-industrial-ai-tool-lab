@@ -1760,11 +1760,10 @@ def glossary_version_text() -> str:
 
     return "\n".join(
         [
-            "Glossary file: glossary.xlsx",
-            f"Last updated: {modified_text}",
-            "Updated by: Aoi Minamoto",
-            f"Glossary terms: {term_count}",
-            f"Version hash: {digest}",
+            "Glossary: glossary.xlsx",
+            f"Update Date: {modified_text}",
+            "Update person: Aoi Minamoto",
+            f"Quantity of Glossary: {term_count}",
         ]
     )
 
