@@ -1003,6 +1003,33 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, transl
     return chunk_translations, chunk_hits, token_usage
 
 
+def translate_batch_chunk_resilient(
+    chunk: list[TextBlock],
+    glossary: pd.DataFrame,
+    translation_mode: str,
+) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
+    try:
+        return translate_batch_chunk(chunk, glossary, translation_mode)
+    except Exception:
+        if len(chunk) <= 1:
+            raise
+
+    midpoint = max(len(chunk) // 2, 1)
+    combined_translations = {}
+    combined_hits = []
+    combined_usage = TokenUsage()
+    for part in (chunk[:midpoint], chunk[midpoint:]):
+        part_translations, part_hits, part_usage = translate_batch_chunk_resilient(
+            part,
+            glossary,
+            translation_mode,
+        )
+        combined_translations.update(part_translations)
+        combined_hits.extend(part_hits)
+        combined_usage.add(part_usage)
+    return combined_translations, combined_hits, combined_usage
+
+
 def translation_memory_key(text: str) -> str:
     return clean_text(text)
 
@@ -1066,7 +1093,7 @@ def translate_blocks_batch(
     if chunks:
         with ThreadPoolExecutor(max_workers=parallel_batches) as executor:
             future_to_chunk = {
-                executor.submit(translate_batch_chunk, chunk, glossary, translation_mode): chunk
+                executor.submit(translate_batch_chunk_resilient, chunk, glossary, translation_mode): chunk
                 for chunk in chunks
             }
 
