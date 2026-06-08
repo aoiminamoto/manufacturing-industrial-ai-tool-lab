@@ -1847,8 +1847,8 @@ def apply_compact_style() -> None:
 
         .usage-card-label {
             color: #475569;
-            font-size: 0.82rem;
-            font-weight: 600;
+            font-size: 1rem;
+            font-weight: 650;
             letter-spacing: 0;
             line-height: 1.2;
             margin-bottom: 6px;
