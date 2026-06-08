@@ -239,6 +239,31 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
+def estimate_remaining_time(done: int, total: int, elapsed_seconds: float) -> str:
+    if done <= 0 or total <= 0 or done >= total or elapsed_seconds <= 0:
+        return ""
+    remaining_seconds = (elapsed_seconds / done) * max(total - done, 0)
+    return format_duration(remaining_seconds)
+
+
+def progress_text(done: int, total: int, elapsed_seconds: float | None = None) -> str:
+    percent = 100 if total <= 0 else min(int((done / total) * 100), 100)
+    text = f"{percent}%"
+    if elapsed_seconds is not None:
+        eta = estimate_remaining_time(done, total, elapsed_seconds)
+        if eta:
+            text += f" · ETA {eta}"
+    return text
+
+
+def elapsed_since_timestamp(timestamp_text: str) -> float | None:
+    try:
+        started_at = datetime.strptime(timestamp_text, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    return max((datetime.now() - started_at).total_seconds(), 0)
+
+
 def clean_office_xml_text(value: str) -> str:
     # Office XML files cannot contain most control characters.
     return "".join(
@@ -1750,6 +1775,10 @@ def apply_compact_style() -> None:
         div[data-testid="stHorizontalBlock"] {
             align-items: center;
         }
+
+        div[data-testid="stProgress"] > div > div > div {
+            height: 14px;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1892,8 +1921,12 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             elif active_job["status"] == "failed":
                 st.error(f"Large file failed: {active_job['error_message'] or 'No error detail.'}")
             else:
+                active_done = int(active_job["completed_blocks"] or 0)
+                active_total = int(active_job["translatable_blocks"] or 0)
+                active_elapsed = elapsed_since_timestamp(active_job.get("created_at", ""))
                 st.info(
-                    f"Large file running: {active_job['completed_blocks']}/{active_job['translatable_blocks']} JP blocks."
+                    f"Large file running: {active_done}/{active_total} JP blocks · "
+                    f"{progress_text(active_done, active_total, active_elapsed)}"
                 )
                 components.html("<script>setTimeout(() => window.parent.location.reload(), 15000);</script>", height=0)
 
@@ -1973,9 +2006,13 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
         st.info("Large file mode")
 
     initial_ratio = 1.0 if not translatable_blocks else min(saved_count / len(translatable_blocks), 1.0)
-    progress = st.progress(initial_ratio)
+    progress_col, progress_text_col, _ = st.columns([0.34, 0.22, 0.44])
+    with progress_col:
+        progress = st.progress(initial_ratio)
+    progress_info = progress_text_col.empty()
     status = st.empty()
     metrics = st.empty()
+    progress_info.write(progress_text(saved_count, len(translatable_blocks)))
     if saved_count:
         status.write("Saved progress found.")
     metrics.write(
@@ -2051,6 +2088,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             st.session_state["translated_document_preview"] = []
             st.session_state["translated_document_terms"] = []
             progress.progress(1.0)
+            progress_info.write("100%")
             status.success("Download ready.")
         elif size_or_block_recommendation:
             job_id = create_translation_job(
@@ -2098,6 +2136,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             def update_foreground_progress(done, total, done_batches, total_batches, elapsed, message):
                 ratio = 1.0 if total == 0 else min(done / total, 1.0)
                 progress.progress(ratio)
+                progress_info.write(progress_text(done, total, elapsed))
                 status.write(message)
                 metrics.write(f"{done}/{total} JP blocks. {done_batches}/{total_batches} batch(es).")
                 update_translation_job(
@@ -2153,6 +2192,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 st.session_state["translated_document_preview"] = []
                 st.session_state["translated_document_terms"] = []
                 progress.progress(1.0)
+                progress_info.write("100%")
                 status.success("Download ready.")
                 metrics.write("Translation complete.")
             except Exception as exc:
@@ -2196,8 +2236,6 @@ with st.sidebar:
     st.code(glossary_version_text(), language="text")
     st.success("PLC/SPLC rules are controlled by the app owner.")
     st.code(plc_rules_version_text(), language="text")
-    st.caption("Users choose a translation mode. Glossary and PLC rules are managed as controlled internal files.")
-    st.caption("For demo testing, please use small documents to avoid unnecessary OpenAI API cost.")
 
 try:
     glossary = normalize_glossary(read_glossary(None))
