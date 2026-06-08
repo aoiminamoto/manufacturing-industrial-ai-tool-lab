@@ -1836,7 +1836,43 @@ def apply_compact_style() -> None:
         div[data-testid="stProgress"] > div > div > div {
             height: 14px;
         }
+
+        .usage-card {
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            background: #ffffff;
+            padding: 14px 16px 16px;
+            margin-bottom: 18px;
+        }
+
+        .usage-card-label {
+            color: #475569;
+            font-size: 0.82rem;
+            font-weight: 600;
+            letter-spacing: 0;
+            line-height: 1.2;
+            margin-bottom: 6px;
+        }
+
+        .usage-card-value {
+            color: #111827;
+            font-size: 2.45rem;
+            font-weight: 750;
+            line-height: 1;
+        }
         </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_usage_card(usage_count: int) -> None:
+    st.markdown(
+        f"""
+        <div class="usage-card">
+          <div class="usage-card-label">App use times</div>
+          <div class="usage-card-value">{usage_count:,}</div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -2290,7 +2326,7 @@ usage_count = increment_usage_count_once()
 st.title("Battery Plant JP-EN Translator")
 
 with st.sidebar:
-    st.metric("App use times", usage_count)
+    render_usage_card(usage_count)
     st.header("Knowledge Base")
     with st.expander("Glossary"):
         st.code(glossary_version_text(), language="text")
