@@ -1874,6 +1874,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
         "Upload Japanese document",
         type=["csv", "txt", "as", "docx", "xlsx", "xlsm"],
     )
+    st.caption("Max 50 MB. Files over 5 MB or 1,000 text blocks may run in background.")
 
     if uploaded_document is None:
         st.info("Upload CSV, TXT, AS, Word, or Excel.")
