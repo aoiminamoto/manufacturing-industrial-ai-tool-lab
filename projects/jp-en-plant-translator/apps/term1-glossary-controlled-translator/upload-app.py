@@ -2015,8 +2015,6 @@ def render_active_document_job(
         with active_progress_col:
             st.progress(active_ratio)
         active_text_col.write(progress_text(active_done, active_total, active_elapsed))
-        active_message = active_job["progress_message"] or "Translating"
-        st.info(active_message)
 
 
 def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> None:
