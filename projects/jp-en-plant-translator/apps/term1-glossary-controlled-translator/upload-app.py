@@ -1166,7 +1166,7 @@ def translate_blocks_batch(
             0,
             total_batches,
             0,
-            "Resuming from saved progress and translation memory." if completed_at_start else "Starting translation.",
+            "Resuming translation." if completed_at_start else "Starting translation.",
         )
 
     chunks = [
@@ -1210,7 +1210,7 @@ def translate_blocks_batch(
                         completed_batches,
                         total_batches,
                         time.time() - started_at,
-                        f"Saved batch progress. Running up to {parallel_batches} batch(es) in parallel.",
+                        "Translating",
                     )
 
     return translations, all_hits, token_usage
@@ -1693,7 +1693,7 @@ def run_document_translation_job(
         )
 
     try:
-        update_translation_job(job_id, status="running", error_message="", progress_message="Background translation started.")
+        update_translation_job(job_id, status="running", error_message="", progress_message="Starting translation.")
         translations, _, token_usage = translate_blocks_batch(
             blocks,
             glossary,
@@ -2012,10 +2012,8 @@ def render_active_document_job(
         with active_progress_col:
             st.progress(active_ratio)
         active_text_col.write(progress_text(active_done, active_total, active_elapsed))
-        active_message = active_job["progress_message"] or "Running | Background job"
-        st.info(f"{active_message} | {active_done}/{active_total} JP blocks")
-        if st.button("Refresh progress", key=f"refresh_{active_job_id}"):
-            rerun_app()
+        active_message = active_job["progress_message"] or "Translating"
+        st.info(active_message)
 
 
 def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> None:
@@ -2032,7 +2030,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
 
     st.caption("Upload")
     uploaded_document = st.file_uploader(
-        "Upload Japanese document (Max 100 MB. Files over 5 MB or 1,000 text blocks may run in background)",
+        "Upload Japanese document (Max 100 MB)",
         type=["csv", "txt", "as", "docx", "xlsx", "xlsm"],
         label_visibility="collapsed",
     )
@@ -2093,6 +2091,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
         render_active_document_job(active_job_id, glossary, plc_rules, translation_mode)
         return
 
+    st.caption("Ready")
     translate_clicked = st.button("Start Translation", type="primary")
 
     if translate_clicked:
@@ -2166,7 +2165,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 progress_path,
             )
             st.session_state["active_document_job_id"] = job_id
-            status.success("Running")
+            status.success("Translating")
             rerun_app()
 
     if st.session_state.get("translated_document_bytes"):
