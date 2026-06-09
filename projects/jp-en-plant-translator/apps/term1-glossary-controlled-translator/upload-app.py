@@ -1,6 +1,5 @@
 import csv
 import mimetypes
-import html
 import io
 import hashlib
 import json
@@ -22,7 +21,6 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from openpyxl import load_workbook
 from openai import APIConnectionError, APIStatusError, AuthenticationError, OpenAI, RateLimitError
@@ -539,6 +537,21 @@ def translation_job_detail(job_id: str) -> pd.DataFrame:
             conn,
             params=(job_id,),
         )
+
+
+def latest_running_translation_job_id() -> str:
+    init_job_store()
+    with sqlite3.connect(JOB_DB_PATH) as conn:
+        row = conn.execute(
+            """
+            SELECT job_id
+            FROM translation_jobs
+            WHERE status IN ('pending', 'running')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return row[0] if row else ""
 
 
 def is_safe_glossary_term(jp: str) -> bool:
@@ -1879,54 +1892,13 @@ def render_usage_card(usage_count: int) -> None:
 
 
 def render_translation_result(translated_text: str) -> None:
-    escaped_text = html.escape(translated_text)
-    js_text = json.dumps(translated_text)
     line_count = max(translated_text.count("\n") + 1, 4)
     height = min(max(210, line_count * 28 + 92), 520)
-    components.html(
-        f"""
-        <div style="font-family: Arial, sans-serif;">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;">
-            <div style="font-size:18px;font-weight:700;color:#111827;">English Translation</div>
-            <button
-              id="copyTranslation"
-              style="border:1px solid #cbd5e1;background:#ffffff;color:#111827;border-radius:4px;padding:7px 12px;font-size:14px;cursor:pointer;"
-            >
-              Copy
-            </button>
-          </div>
-          <div
-            style="white-space:pre-wrap;border:1px solid #d0d7de;border-radius:6px;background:#ffffff;color:#111827;padding:18px;font-size:20px;line-height:1.65;min-height:150px;max-height:380px;overflow-y:auto;"
-          >{escaped_text}</div>
-        </div>
-        <script>
-          const copyButton = document.getElementById("copyTranslation");
-          const translationText = {js_text};
-          copyButton.addEventListener("click", async () => {{
-            try {{
-              if (navigator.clipboard && window.isSecureContext) {{
-                await navigator.clipboard.writeText(translationText);
-              }} else {{
-                const textArea = document.createElement("textarea");
-                textArea.value = translationText;
-                textArea.style.position = "fixed";
-                textArea.style.left = "-9999px";
-                document.body.appendChild(textArea);
-                textArea.focus();
-                textArea.select();
-                document.execCommand("copy");
-                document.body.removeChild(textArea);
-              }}
-              copyButton.textContent = "Copied";
-              setTimeout(() => copyButton.textContent = "Copy", 1400);
-            }} catch (error) {{
-              copyButton.textContent = "Copy failed";
-              setTimeout(() => copyButton.textContent = "Copy", 1800);
-            }}
-          }});
-        </script>
-        """,
+    st.text_area(
+        "English Translation",
+        value=translated_text,
         height=height,
+        key="english_translation_result",
     )
 
 
@@ -1980,6 +1952,74 @@ def render_text_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> 
             st.error(f"Translation failed: {format_translation_error(exc)}")
 
 
+@st.fragment(run_every="15s")
+def render_active_document_job(
+    active_job_id: str,
+    glossary: pd.DataFrame,
+    plc_rules: pd.DataFrame,
+    translation_mode: str,
+) -> None:
+    detail = translation_job_detail(active_job_id)
+    if detail.empty:
+        return
+
+    active_job = detail.iloc[0].to_dict()
+    result_path_text = str(active_job.get("result_file_path") or "")
+    result_path = Path(result_path_text) if result_path_text else None
+    if active_job["status"] == "completed" and result_path is not None and result_path.exists():
+        result_file_name = active_job["result_file_name"] or output_file_name(active_job["file_name"])
+        render_download_ready(
+            data=result_path.read_bytes(),
+            file_name=result_file_name,
+            mime=active_job["result_mime"] or mime_type(active_job["file_name"]),
+            key=f"active_download_{active_job_id}",
+        )
+        if active_job["notify_email"]:
+            st.link_button(
+                "Open Email Draft",
+                translation_mailto_link(active_job["notify_email"], active_job["file_name"], result_file_name),
+            )
+    elif active_job["status"] == "failed":
+        st.error(f"Failed | {active_job['error_message'] or 'No error detail.'}")
+        if st.button("Retry", key=f"retry_{active_job_id}"):
+            source_path_text = str(active_job.get("source_file_path") or "")
+            source_path = Path(source_path_text) if source_path_text else None
+            if source_path is None or not source_path.exists():
+                st.warning("Source file not found.")
+            else:
+                retry_raw = source_path.read_bytes()
+                retry_blocks = extract_text_blocks(retry_raw, active_job["file_name"])
+                retry_mode = active_job["translation_mode"] or translation_mode
+                retry_glossary = glossary_for_mode(glossary, plc_rules, retry_mode)
+                retry_progress_path = checkpoint_path_for(active_job["file_name"], retry_raw, retry_mode)
+                retry_batch_count = int(active_job["total_batches"] or 0)
+                retry_job_id = start_background_translation_job(
+                    retry_raw,
+                    active_job["file_name"],
+                    retry_blocks,
+                    retry_glossary,
+                    retry_mode,
+                    active_job["notify_email"] or "",
+                    retry_batch_count,
+                    retry_progress_path,
+                )
+                st.session_state["active_document_job_id"] = retry_job_id
+                rerun_app()
+    else:
+        active_done = int(active_job["completed_blocks"] or 0)
+        active_total = int(active_job["translatable_blocks"] or 0)
+        active_elapsed = elapsed_since_timestamp(active_job.get("created_at", ""))
+        active_ratio = 0.0 if active_total == 0 else min(active_done / active_total, 1.0)
+        active_progress_col, active_text_col, _ = st.columns([0.34, 0.22, 0.44])
+        with active_progress_col:
+            st.progress(active_ratio)
+        active_text_col.write(progress_text(active_done, active_total, active_elapsed))
+        active_message = active_job["progress_message"] or "Running | Background job"
+        st.info(f"{active_message} | {active_done}/{active_total} JP blocks")
+        if st.button("Refresh progress", key=f"refresh_{active_job_id}"):
+            rerun_app()
+
+
 def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> None:
     st.caption("Mode")
     translation_mode = st.radio(
@@ -1991,60 +2031,6 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
     )
 
     active_job_id = st.session_state.get("active_document_job_id")
-    if active_job_id:
-        detail = translation_job_detail(active_job_id)
-        if not detail.empty:
-            active_job = detail.iloc[0].to_dict()
-            result_path_text = str(active_job.get("result_file_path") or "")
-            result_path = Path(result_path_text) if result_path_text else None
-            if active_job["status"] == "completed" and result_path is not None and result_path.exists():
-                result_file_name = active_job["result_file_name"] or output_file_name(active_job["file_name"])
-                render_download_ready(
-                    data=result_path.read_bytes(),
-                    file_name=result_file_name,
-                    mime=active_job["result_mime"] or mime_type(active_job["file_name"]),
-                    key=f"active_download_{active_job_id}",
-                )
-                if active_job["notify_email"]:
-                    st.link_button(
-                        "Open Email Draft",
-                        translation_mailto_link(active_job["notify_email"], active_job["file_name"], result_file_name),
-                    )
-            elif active_job["status"] == "failed":
-                st.error(f"Failed | {active_job['error_message'] or 'No error detail.'}")
-                if st.button("Retry", key=f"retry_{active_job_id}"):
-                    source_path_text = str(active_job.get("source_file_path") or "")
-                    source_path = Path(source_path_text) if source_path_text else None
-                    if source_path is None or not source_path.exists():
-                        st.warning("Source file not found.")
-                    else:
-                        retry_raw = source_path.read_bytes()
-                        retry_blocks = extract_text_blocks(retry_raw, active_job["file_name"])
-                        retry_mode = active_job["translation_mode"] or translation_mode
-                        retry_glossary = glossary_for_mode(glossary, plc_rules, retry_mode)
-                        retry_progress_path = checkpoint_path_for(active_job["file_name"], retry_raw, retry_mode)
-                        retry_batch_count = int(active_job["total_batches"] or 0)
-                        retry_job_id = start_background_translation_job(
-                            retry_raw,
-                            active_job["file_name"],
-                            retry_blocks,
-                            retry_glossary,
-                            retry_mode,
-                            active_job["notify_email"] or "",
-                            retry_batch_count,
-                            retry_progress_path,
-                        )
-                        st.session_state["active_document_job_id"] = retry_job_id
-                        rerun_app()
-            else:
-                active_done = int(active_job["completed_blocks"] or 0)
-                active_total = int(active_job["translatable_blocks"] or 0)
-                active_elapsed = elapsed_since_timestamp(active_job.get("created_at", ""))
-                st.info(
-                    f"Running | {active_done}/{active_total} JP blocks | "
-                    f"{progress_text(active_done, active_total, active_elapsed)}"
-                )
-                components.html("<script>setTimeout(() => window.parent.location.reload(), 15000);</script>", height=0)
 
     st.caption("Upload")
     uploaded_document = st.file_uploader(
@@ -2054,6 +2040,11 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
     )
 
     if uploaded_document is None:
+        active_job_id = active_job_id or latest_running_translation_job_id()
+        if active_job_id:
+            st.session_state["active_document_job_id"] = active_job_id
+            st.caption("Progress")
+            render_active_document_job(active_job_id, glossary, plc_rules, translation_mode)
         return
 
     raw_document = uploaded_document.getvalue()
@@ -2071,6 +2062,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
         st.session_state.pop("translated_document_terms", None)
         st.session_state.pop("active_document_job_id", None)
         st.session_state["translated_document_key"] = document_key
+        active_job_id = ""
 
     try:
         blocks = extract_text_blocks(raw_document, uploaded_document.name)
@@ -2123,6 +2115,11 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
         st.info("Large file mode | Background job")
 
     st.caption("Progress")
+    active_job_id = st.session_state.get("active_document_job_id")
+    if active_job_id:
+        render_active_document_job(active_job_id, glossary, plc_rules, translation_mode)
+        return
+
     initial_ratio = 1.0 if not translatable_blocks else min(saved_count / len(translatable_blocks), 1.0)
     progress_col, progress_text_col, _ = st.columns([0.34, 0.22, 0.44])
     with progress_col:
@@ -2220,8 +2217,9 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 progress_path,
             )
             st.session_state["active_document_job_id"] = job_id
-            status.success("Running | Background job")
-            metrics.write("Auto-refresh every 15s | Download appears here")
+            status.success("Running")
+            metrics.write("Progress updates below")
+            rerun_app()
         else:
             job_id = create_translation_job(
                 uploaded_document.name,
