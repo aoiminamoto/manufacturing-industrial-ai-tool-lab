@@ -1757,14 +1757,18 @@ def glossary_version_text() -> str:
         term_count = max(len(read_glossary(None)) - 1, 0)
     except Exception:
         term_count = "Unavailable"
+    term_count_text = f"{term_count:,}" if isinstance(term_count, int) else str(term_count)
 
     return "\n".join(
         [
-            "Glossary file: glossary.xlsx",
-            f"Last updated: {modified_text}",
-            "Updated by: Aoi Minamoto",
-            f"Glossary terms: {term_count}",
-            f"Version hash: {digest}",
+            "Glossary Information",
+            "",
+            "Version: v1.0",
+            f"Terms: {term_count_text}",
+            f"Last Updated: {modified_text}",
+            "Owner: Aoi Minamoto",
+            "",
+            "Source: glossary.xlsx",
         ]
     )
 
@@ -1788,11 +1792,14 @@ def plc_rules_version_text() -> str:
 
     return "\n".join(
         [
-            f"PLC rules file: {rule_path.name}",
-            f"Last updated: {modified_text}",
-            "Updated by: Aoi Minamoto",
-            f"PLC rules: {rule_count}",
-            f"Version hash: {digest}",
+            "PLC Rules Information",
+            "",
+            "Version: v1.0",
+            f"Rules: {rule_count}",
+            f"Last Updated: {modified_text}",
+            "Owner: Aoi Minamoto",
+            "",
+            f"Source: {rule_path.name}",
         ]
     )
 
@@ -1829,7 +1836,43 @@ def apply_compact_style() -> None:
         div[data-testid="stProgress"] > div > div > div {
             height: 14px;
         }
+
+        .usage-card {
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            background: #ffffff;
+            padding: 14px 16px 16px;
+            margin-bottom: 18px;
+        }
+
+        .usage-card-label {
+            color: #475569;
+            font-size: 1rem;
+            font-weight: 650;
+            letter-spacing: 0;
+            line-height: 1.2;
+            margin-bottom: 6px;
+        }
+
+        .usage-card-value {
+            color: #111827;
+            font-size: 2.45rem;
+            font-weight: 600;
+            line-height: 1;
+        }
         </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_usage_card(usage_count: int) -> None:
+    st.markdown(
+        f"""
+        <div class="usage-card">
+          <div class="usage-card-label">App use times</div>
+          <div class="usage-card-value">{usage_count:,}</div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -1896,7 +1939,7 @@ def render_text_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> 
         key="text_translation_mode",
     )
     jp_text = st.text_area(
-        "Paste Japanese text",
+        "Input or paste Japanese text",
         height=220,
         placeholder="例: 稼働モニで設備異常を確認してください。",
     )
@@ -2283,8 +2326,8 @@ usage_count = increment_usage_count_once()
 st.title("Battery Plant JP-EN Translator")
 
 with st.sidebar:
-    st.metric("App use times", usage_count)
-    st.header("Knowledge")
+    render_usage_card(usage_count)
+    st.header("Knowledge Base")
     with st.expander("Glossary"):
         st.code(glossary_version_text(), language="text")
     with st.expander("PLC rules"):
