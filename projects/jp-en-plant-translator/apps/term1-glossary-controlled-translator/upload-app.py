@@ -2092,71 +2092,18 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
         len(raw_document) >= EMAIL_DRAFT_RECOMMENDED_BYTES
         or len(blocks) >= EMAIL_DRAFT_RECOMMENDED_BLOCKS
     )
-    stat_cols = st.columns(4)
-    stat_cols[0].metric("Size", format_file_size(len(raw_document)))
-    stat_cols[1].metric("Text", len(blocks))
-    stat_cols[2].metric("JP", len(translatable_blocks))
-    stat_cols[3].metric("Batches", batch_count)
-
-    st.caption("Delivery")
-    smtp_configured = is_smtp_configured()
-    delivery_options = ["Download only", "Auto email" if smtp_configured else "Email draft"]
-    delivery_choice = st.radio(
-        "Delivery",
-        delivery_options,
-        index=1 if size_or_block_recommendation else 0,
-        horizontal=True,
-        label_visibility="collapsed",
-    )
     notify_email = ""
-    if delivery_choice != "Download only":
-        notify_email = st.text_input("Email", placeholder="name@example.com").strip()
-    if len(blocks) >= 1000:
-        st.info("Large file mode | Background job")
-
-    st.caption("Progress")
     active_job_id = st.session_state.get("active_document_job_id")
     if active_job_id:
+        st.caption("Progress")
         render_active_document_job(active_job_id, glossary, plc_rules, translation_mode)
         return
 
-    initial_ratio = 1.0 if not translatable_blocks else min(saved_count / len(translatable_blocks), 1.0)
-    progress_col, progress_text_col, _ = st.columns([0.34, 0.22, 0.44])
-    with progress_col:
-        progress = st.progress(initial_ratio)
-    progress_info = progress_text_col.empty()
-    status = st.empty()
-    metrics = st.empty()
-    progress_info.write(progress_text(saved_count, len(translatable_blocks)))
-    if saved_count:
-        status.write("Resume available")
-    metrics.write(
-        f"Ready | {saved_count}/{len(translatable_blocks)} saved | {batch_count} batch(es)"
-    )
-
-    action_col, clear_col, _ = st.columns([0.28, 0.22, 0.5])
-    with action_col:
-        translate_clicked = st.button("Translate Document", type="primary")
-    with clear_col:
-        clear_clicked = st.button("Clear Saved Progress")
-
-    if clear_clicked:
-        if progress_path.exists():
-            progress_path.unlink()
-        st.session_state.pop("translated_document_bytes", None)
-        st.session_state.pop("translated_document_name", None)
-        st.session_state.pop("translated_document_mime", None)
-        st.session_state.pop("translated_document_preview", None)
-        st.session_state.pop("translated_document_terms", None)
-        st.success("Saved progress cleared for this document.")
-        rerun_app()
+    translate_clicked = st.button("Start Translation", type="primary")
 
     if translate_clicked:
         job_id = ""
         active_glossary = glossary_for_mode(glossary, plc_rules, translation_mode)
-        if notify_email and not is_valid_email(notify_email):
-            st.warning("Please enter a valid email address, or leave the email field blank.")
-            return
         if not blocks:
             st.warning(
                 "No translatable text was found in this document. "
@@ -2164,6 +2111,14 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 "For Excel, save old .xls files as .xlsx first."
             )
             return
+        st.caption("Progress")
+        initial_ratio = 1.0 if not translatable_blocks else min(saved_count / len(translatable_blocks), 1.0)
+        progress_col, progress_text_col, _ = st.columns([0.34, 0.22, 0.44])
+        with progress_col:
+            progress = st.progress(initial_ratio)
+        progress_info = progress_text_col.empty()
+        status = st.empty()
+        progress_info.write(progress_text(saved_count, len(translatable_blocks)))
         if not translatable_blocks:
             st.info("No Japanese text was found. Downloading the original document is enough.")
             translated_document = build_translated_document(raw_document, uploaded_document.name, {}, blocks)
@@ -2218,7 +2173,6 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             )
             st.session_state["active_document_job_id"] = job_id
             status.success("Running")
-            metrics.write("Progress updates below")
             rerun_app()
         else:
             job_id = create_translation_job(
@@ -2240,7 +2194,6 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 progress.progress(ratio)
                 progress_info.write(progress_text(done, total, elapsed))
                 status.write(message)
-                metrics.write(f"Running | {done}/{total} JP blocks | {done_batches}/{total_batches} batch(es)")
                 update_translation_job(
                     job_id,
                     status="running",
@@ -2296,7 +2249,6 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
                 progress.progress(1.0)
                 progress_info.write("100%")
                 status.success("Complete | Download ready")
-                metrics.write("Complete")
             except Exception as exc:
                 update_translation_job(
                     job_id,
