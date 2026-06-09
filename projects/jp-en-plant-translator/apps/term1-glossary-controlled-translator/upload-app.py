@@ -238,6 +238,9 @@ def format_file_size(size_bytes: int) -> str:
 def estimate_remaining_time(done: int, total: int, elapsed_seconds: float) -> str:
     if done <= 0 or total <= 0 or done >= total or elapsed_seconds <= 0:
         return ""
+    progress_ratio = done / total
+    if progress_ratio < 0.25:
+        return ""
     remaining_seconds = (elapsed_seconds / done) * max(total - done, 0)
     return format_duration(remaining_seconds)
 
