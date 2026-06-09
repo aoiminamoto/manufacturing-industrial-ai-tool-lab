@@ -246,13 +246,13 @@ def estimate_remaining_time(done: int, total: int, elapsed_seconds: float) -> st
 
 
 def progress_text(done: int, total: int, elapsed_seconds: float | None = None) -> str:
-    percent = 100 if total <= 0 else min(int((done / total) * 100), 100)
-    text = f"{percent}%"
-    if elapsed_seconds is not None:
-        eta = estimate_remaining_time(done, total, elapsed_seconds)
-        if eta:
-            text += f" | ETA {eta}"
-    return text
+    if total <= 0:
+        return "Preparing"
+    if done >= total:
+        return "Complete"
+    if done <= 0:
+        return "Starting"
+    return "Translating"
 
 
 def elapsed_since_timestamp(timestamp_text: str) -> float | None:
