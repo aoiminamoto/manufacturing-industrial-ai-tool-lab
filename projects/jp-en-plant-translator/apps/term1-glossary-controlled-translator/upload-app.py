@@ -2011,6 +2011,8 @@ def render_active_document_job(
         active_total = int(active_job["translatable_blocks"] or 0)
         active_elapsed = elapsed_since_timestamp(active_job.get("created_at", ""))
         active_ratio = 0.0 if active_total == 0 else min(active_done / active_total, 1.0)
+        if active_total > 0 and active_done == 0:
+            active_ratio = 0.06
         active_progress_col, active_text_col, _ = st.columns([0.34, 0.22, 0.44])
         with active_progress_col:
             st.progress(active_ratio)
