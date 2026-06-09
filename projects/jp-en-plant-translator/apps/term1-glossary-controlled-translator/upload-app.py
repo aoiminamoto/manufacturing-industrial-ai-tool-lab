@@ -48,8 +48,6 @@ MAX_TRANSLATION_RETRIES = 3
 OPENAI_TIMEOUT_SECONDS = 120
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024
-EMAIL_DRAFT_RECOMMENDED_BYTES = 5 * 1024 * 1024
-EMAIL_DRAFT_RECOMMENDED_BLOCKS = 1000
 PROGRESS_DIR = BASE_DIR / ".term1_progress"
 USAGE_COUNT_PATH = BASE_DIR / ".term1_usage_count.json"
 JOB_DB_PATH = BASE_DIR / ".term1_jobs.db"
@@ -884,7 +882,7 @@ def openai_client() -> OpenAI:
     else:
         client = OpenAI(api_key=api_key)
 
-    tracing_enabled = os.getenv("LANGSMITH_TRACING", "").lower() in {"1", "true", "yes"}
+    tracing_enabled = os.getenv("LANGSMITH_TRACING", "").lower() == "force"
     if tracing_enabled and wrap_openai is not None:
         return wrap_openai(client)
     return client
@@ -2088,10 +2086,6 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
     )
     batch_count = (pending_unique_count + DOCUMENT_BATCH_SIZE - 1) // DOCUMENT_BATCH_SIZE
 
-    size_or_block_recommendation = (
-        len(raw_document) >= EMAIL_DRAFT_RECOMMENDED_BYTES
-        or len(blocks) >= EMAIL_DRAFT_RECOMMENDED_BLOCKS
-    )
     notify_email = ""
     active_job_id = st.session_state.get("active_document_job_id")
     if active_job_id:
@@ -2160,7 +2154,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             progress.progress(1.0)
             progress_info.write("100%")
             status.success("Complete | Download ready")
-        elif size_or_block_recommendation:
+        else:
             job_id = start_background_translation_job(
                 raw_document,
                 uploaded_document.name,
@@ -2174,90 +2168,6 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             st.session_state["active_document_job_id"] = job_id
             status.success("Running")
             rerun_app()
-        else:
-            job_id = create_translation_job(
-                uploaded_document.name,
-                len(raw_document),
-                len(blocks),
-                len(translatable_blocks),
-                batch_count,
-                translation_mode,
-                notify_email=notify_email,
-                status="running",
-            )
-            source_path = job_upload_path(job_id, uploaded_document.name)
-            source_path.write_bytes(raw_document)
-            update_translation_job(job_id, source_file_path=str(source_path))
-
-            def update_foreground_progress(done, total, done_batches, total_batches, elapsed, message):
-                ratio = 1.0 if total == 0 else min(done / total, 1.0)
-                progress.progress(ratio)
-                progress_info.write(progress_text(done, total, elapsed))
-                status.write(message)
-                update_translation_job(
-                    job_id,
-                    status="running",
-                    completed_blocks=done,
-                    completed_batches=done_batches,
-                    progress_message=message,
-                )
-
-            started_at = time.time()
-            try:
-                translations, all_hits, token_usage = translate_blocks_batch(
-                    blocks,
-                    active_glossary,
-                    translation_mode,
-                    checkpoint_path=progress_path,
-                    progress_callback=update_foreground_progress,
-                )
-                translated_document = build_translated_document(raw_document, uploaded_document.name, translations, blocks)
-                translated_name = output_file_name(uploaded_document.name)
-                result_path = job_result_path(job_id, uploaded_document.name)
-                result_path.write_bytes(translated_document)
-                notification_status = ""
-                if notify_email:
-                    try:
-                        notification_status = send_completed_translation_email(
-                            notify_email,
-                            uploaded_document.name,
-                            result_path,
-                            translated_name,
-                        )
-                    except Exception as exc:
-                        notification_status = f"Email failed: {exc}"
-                update_translation_job(
-                    job_id,
-                    status="completed",
-                    completed_blocks=len(translatable_blocks),
-                    completed_batches=batch_count,
-                    input_tokens=token_usage.input_tokens,
-                    output_tokens=token_usage.output_tokens,
-                    total_tokens=token_usage.total_tokens,
-                    result_file_name=translated_name,
-                    result_file_path=str(result_path),
-                    result_mime=mime_type(translated_name),
-                    notification_status=notification_status,
-                    progress_message=f"Completed in {format_duration(time.time() - started_at)}.",
-                    finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
-                )
-                st.session_state["translated_document_bytes"] = translated_document
-                st.session_state["translated_document_name"] = translated_name
-                st.session_state["translated_document_mime"] = mime_type(translated_name)
-                st.session_state["translated_document_preview"] = []
-                st.session_state["translated_document_terms"] = []
-                progress.progress(1.0)
-                progress_info.write("100%")
-                status.success("Complete | Download ready")
-            except Exception as exc:
-                update_translation_job(
-                    job_id,
-                    status="failed",
-                    error_message=format_translation_error(exc),
-                    finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
-                )
-                status.error("Translation failed.")
-                st.error(f"Translation failed: {format_translation_error(exc)}")
 
     if st.session_state.get("translated_document_bytes"):
         render_download_ready(
