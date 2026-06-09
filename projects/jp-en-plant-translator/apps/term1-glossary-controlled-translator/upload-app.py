@@ -1851,6 +1851,20 @@ def apply_compact_style() -> None:
             height: 14px;
         }
 
+        div[data-testid="stFileUploaderFile"] {
+            max-width: 100%;
+        }
+
+        div[data-testid="stFileUploaderFileName"],
+        div[data-testid="stFileUploaderFile"] span {
+            max-width: 100%;
+            overflow: visible;
+            text-overflow: clip;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
         .usage-card {
             border: 1px solid #d0d7de;
             border-radius: 6px;
