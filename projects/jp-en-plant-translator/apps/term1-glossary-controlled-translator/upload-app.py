@@ -2076,7 +2076,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
 
     active_job_id = st.session_state.get("active_document_job_id")
 
-    st.caption("Upload document (Max 100 MB)")
+    st.caption("Upload document (CSV, TXT, AS, DOCX, XLSX, XLSM | Max 100 MB)")
     uploaded_document = st.file_uploader(
         "Upload document (Max 100 MB)",
         type=["csv", "txt", "as", "docx", "xlsx", "xlsm"],
