@@ -2053,11 +2053,6 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
     )
 
     if uploaded_document is None:
-        active_job_id = active_job_id or latest_running_translation_job_id()
-        if active_job_id:
-            st.session_state["active_document_job_id"] = active_job_id
-            st.caption("Progress")
-            render_active_document_job(active_job_id, glossary, plc_rules, translation_mode)
         return
 
     raw_document = uploaded_document.getvalue()
