@@ -1756,6 +1756,17 @@ def terminology_report(hits: list[TermHit]) -> pd.DataFrame:
     )
 
 
+def ai_model_version_text() -> str:
+    return "\n".join(
+        [
+            "AI Model",
+            "",
+            "Provider: OpenAI",
+            f"Model: {openai_model()}",
+        ]
+    )
+
+
 def glossary_version_text() -> str:
     glossary_path = next((path for path in DEFAULT_GLOSSARY_PATHS if path.exists()), None)
     if glossary_path is None:
@@ -2198,6 +2209,8 @@ st.title("Battery Plant JP-EN Translator")
 
 with st.sidebar:
     render_usage_card(usage_count)
+    with st.expander("AI Model"):
+        st.code(ai_model_version_text(), language="text")
     st.header("Knowledge Base")
     with st.expander("Glossary"):
         st.code(glossary_version_text(), language="text")
