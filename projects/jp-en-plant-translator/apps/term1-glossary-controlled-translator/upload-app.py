@@ -1759,10 +1759,8 @@ def terminology_report(hits: list[TermHit]) -> pd.DataFrame:
 def ai_model_version_text() -> str:
     return "\n".join(
         [
-            "AI Model",
-            "",
-            "Provider: OpenAI",
-            f"Model: {openai_model()}",
+            "OpenAI",
+            openai_model(),
         ]
     )
 
