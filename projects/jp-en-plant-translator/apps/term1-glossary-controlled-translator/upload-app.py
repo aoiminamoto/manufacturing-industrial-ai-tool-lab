@@ -1831,12 +1831,28 @@ def apply_compact_style() -> None:
     st.markdown(
         """
         <style>
+        div[data-testid="stMarkdownContainer"] p,
+        div[data-testid="stCaptionContainer"],
+        div[data-testid="stWidgetLabel"],
+        div[data-testid="stFileUploader"],
+        div[data-testid="stRadio"] label,
+        div[data-testid="stCodeBlock"] pre {
+            font-size: 1rem;
+        }
+
+        button[data-baseweb="tab"],
+        div[data-testid="stExpander"] summary {
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
         div.stButton > button,
         div.stDownloadButton > button {
             width: auto;
             min-width: 190px;
             border-radius: 4px;
             padding: 0.42rem 0.9rem;
+            font-size: 1rem;
             font-weight: 500;
             box-shadow: none;
         }
