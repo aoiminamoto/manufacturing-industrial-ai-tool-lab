@@ -2058,7 +2058,7 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
 
     st.caption("Upload")
     uploaded_document = st.file_uploader(
-        "Upload Japanese document (Max 100 MB)",
+        "Upload document (Max 100 MB)",
         type=["csv", "txt", "as", "docx", "xlsx", "xlsm"],
         label_visibility="collapsed",
     )
