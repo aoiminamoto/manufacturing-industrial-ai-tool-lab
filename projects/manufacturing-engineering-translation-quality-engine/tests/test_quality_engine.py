@@ -7,9 +7,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from quality_engine import (
     QualityEngine,
+    OutputPlacement,
     RequirementProfile,
     TerminologyController,
     TerminologyEntry,
+    output_contract_for,
+    reconstruct_tabular_fields,
     translate_robot_program,
 )
 
@@ -66,10 +69,34 @@ class QualityEngineTests(unittest.TestCase):
             raw, self.engine, preferred_encoding="euc_jp"
         )
         decoded = output.decode("euc_jp")
+        contract = output_contract_for(RequirementProfile.ROBOT)
         self.assertEqual(encoding, "euc_jp")
+        self.assertEqual(contract.placement, OutputPlacement.IN_PLACE)
+        self.assertFalse(contract.preserve_source)
         self.assertIn("  SIGNAL X120 ;Emergency Stop", decoded)
         self.assertIn(".PROGRAM demo()", decoded)
         self.assertEqual(len(results), 1)
+
+    def test_plc_contract_preserves_source_in_adjacent_column(self) -> None:
+        result = self.engine.translate_text("非常停止", RequirementProfile.PLC)
+        contract = output_contract_for(RequirementProfile.PLC)
+        fields = reconstruct_tabular_fields("非常停止", result)
+        self.assertEqual(contract.placement, OutputPlacement.ADJACENT_COLUMN)
+        self.assertTrue(contract.preserve_source)
+        self.assertEqual(fields, ("非常停止", "Emergency Stop"))
+
+    def test_safety_plc_contract_also_supports_side_by_side_review(self) -> None:
+        result = self.engine.translate_text("運転準備", RequirementProfile.SAFETY_PLC)
+        fields = reconstruct_tabular_fields("運転準備", result)
+        self.assertEqual(fields, ("運転準備", "Ready to Run"))
+
+    def test_hmi_contract_replaces_text_in_place(self) -> None:
+        result = self.engine.translate_text("非常停止", RequirementProfile.HMI)
+        contract = output_contract_for(RequirementProfile.HMI)
+        fields = reconstruct_tabular_fields("非常停止", result)
+        self.assertEqual(contract.placement, OutputPlacement.IN_PLACE)
+        self.assertFalse(contract.preserve_source)
+        self.assertEqual(fields, ("Emergency Stop",))
 
 
 if __name__ == "__main__":
