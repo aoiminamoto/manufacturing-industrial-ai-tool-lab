@@ -1,6 +1,6 @@
 # Manufacturing AI Translation Platform
 
-A public-safe engineering portfolio project for governed Japanese-to-English translation in manufacturing environments.
+A public-safe engineering portfolio project for governed Japanese-English translation in manufacturing environments.
 
 The platform is designed as a **translation shikumi**: a repeatable mechanism that combines controlled terminology, manufacturing standards, AI translation, engineering review, recovery controls, and continuous improvement. The objective is not generic translation or word collection. It is consistent plant-language governance that can be extended through Yokoten.
 
@@ -36,7 +36,7 @@ The public-safe runnable prototype demonstrates:
 - glossary-controlled Japanese-to-English translation
 - manufacturing-specific translation modes
 - Japanese-only filtering for mixed-language content
-- TXT, CSV, DOCX, XLSX, XLSM, and robot-program processing
+- TXT, CSV, DOCX, PPTX, XLSX, XLSM, and robot-program processing
 - large-file batching with controlled parallel execution
 - checkpoint recovery and resumable document jobs
 - local translation memory and job tracking
@@ -52,6 +52,18 @@ The broader platform architecture also covers an HMI/image workflow:
 5. capture engineering corrections for governed knowledge improvement
 
 The HMI workflow is documented as an architecture and case-study artifact. Organization-specific vision integration and production assets are intentionally excluded from the public prototype.
+
+## July 2026 Engineering Milestone
+
+A shared-pilot iteration extended the broader platform design beyond the original public-safe prototype:
+
+- added explicit JP-to-EN and EN-to-JP direction selection for text and document workflows
+- added PowerPoint document handling with slide-oriented translation guidance
+- introduced session-owned document jobs so one browser cannot list, stop, resume, preview, or download another browser's task through the application UI
+- isolated checkpoint paths for identical files submitted by different sessions
+- clarified supported file types and upload limits at the point of user choice
+
+The repository records the sanitized architecture, decision logic, and validation approach. Production source, runtime data, internal deployment details, and controlled terminology remain private. Browser-session isolation is a pilot safeguard, not a substitute for authenticated enterprise identity.
 
 ## Controlled Knowledge System
 
@@ -73,6 +85,7 @@ These controls surround the AI model. The model provides contextual reasoning; t
 - [Production-readiness roadmap](../../docs/runbooks/manufacturing-ai-platform-production-readiness.md)
 - [Evolution timeline and evidence framework](../../docs/portfolio/)
 - [Architecture Decision Records](../../docs/architecture-decisions/)
+- [Browser-session task-isolation decision](../../docs/architecture-decisions/ADR-006-browser-session-task-isolation.md)
 - [Glossary update runbook](../../docs/runbooks/glossary-update-runbook.md)
 - [Runnable public-safe prototype](apps/term1-glossary-controlled-translator/)
 
@@ -82,6 +95,7 @@ These controls surround the AI model. The model provides contextual reasoning; t
 - defined boundaries between deterministic controls and generative reasoning
 - designed resilient processing for large engineering documents
 - introduced reviewability, recovery, job tracking, and usage measurement
+- converted shared global job visibility into an explicit per-session ownership boundary
 - identified HMI OCR/segmentation as a separate quality layer from translation
 - evaluated shared-server pilot constraints and defined a production-scaling path
 - established a public/private separation model for responsible portfolio evidence

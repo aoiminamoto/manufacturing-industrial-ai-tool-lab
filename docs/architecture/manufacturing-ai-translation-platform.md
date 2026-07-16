@@ -33,6 +33,7 @@ flowchart LR
         O2[Checkpoint Recovery]
         O3[Translation Memory]
         O4[Usage and Quality Metrics]
+        O5[Session-Owned Task Boundary]
     end
 
     subgraph Outputs[Engineering Outputs]
@@ -73,6 +74,12 @@ Large files require checkpoints, retry handling, translation memory, and job sta
 ### 5. Build knowledge governance into the system
 
 Engineering corrections should not remain isolated edits. Approved corrections return to controlled knowledge through an ownership and review process, improving future translations and supporting Yokoten.
+
+### 6. Make task ownership explicit on a shared pilot
+
+Framework-level session state is not sufficient when background jobs are stored in a shared database. Each document job, lookup, stop action, preview, result, and checkpoint must carry the same opaque session owner. This prevents one anonymous browser session from operating on another session's work through the application UI.
+
+The pilot uses an opaque client-session identifier to maintain continuity across refreshes. It is deliberately described as session isolation rather than authentication: a production service still requires enterprise identity, authorization, retention controls, and auditability.
 
 ## Deployment Evolution
 

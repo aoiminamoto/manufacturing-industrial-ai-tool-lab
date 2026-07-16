@@ -103,6 +103,35 @@ This timeline is based on the repository's public Git history. It documents the 
 - [Platform evolution case study](../case-studies/manufacturing-ai-translation-platform-evolution.md)
 - [Production-readiness roadmap](../runbooks/manufacturing-ai-platform-production-readiness.md)
 
+## Phase 6 - Bidirectional Documents and Shared-Session Isolation
+
+**Work date:** July 16, 2026
+
+**Public documentation date:** July 16, 2026
+
+**Engineering focus:** Extend document coverage while correcting shared-state behavior for concurrent pilot users.
+
+**Contribution**
+
+- introduced explicit JP-to-EN and EN-to-JP direction selection for text and document workflows
+- added PowerPoint processing and presentation-oriented translation guidance
+- assigned each persisted document job to an opaque browser-session owner
+- scoped job discovery, stop/retry actions, previews, results, and checkpoint files to that owner
+- validated two-session isolation, same-name file separation, database migration, and UI startup behavior
+- clarified in-product file-type and upload-limit guidance
+
+**Evidence boundary**
+
+- public: sanitized architecture, ADR, case study, timeline, and PPTX-capable public-safe prototype
+- private: implementation diff, regression outputs, operational screenshots, and deployment record
+- excluded: organization branding, internal URLs, controlled terminology, production documents, and runtime databases
+
+**Public evidence**
+
+- [Browser-session task-isolation decision](../architecture-decisions/ADR-006-browser-session-task-isolation.md)
+- [High-level platform architecture](../architecture/manufacturing-ai-translation-platform.md)
+- [Platform evolution case study](../case-studies/manufacturing-ai-translation-platform-evolution.md)
+
 ## Next Verifiable Milestones
 
 Future milestones should be added only after evidence exists:
