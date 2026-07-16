@@ -1,6 +1,6 @@
-# Term1 Glossary-Controlled Manufacturing Translator
+# Manufacturing AI Translation Platform — Public-Safe Prototype
 
-Public-safe Streamlit application for Japanese-to-English manufacturing translation with glossary control, document processing, and domain-specific translation modes.
+Public-safe Streamlit application for Japanese-to-English manufacturing translation with glossary control, resilient document processing, and domain-specific translation modes. The folder retains its original prototype codename for repository continuity; public documentation uses **Manufacturing AI Translation Platform**.
 
 This app demonstrates an engineering approach to AI-assisted translation for plant-floor and manufacturing documents. Instead of treating translation as generic text conversion, it combines approved terminology, manufacturing context, batch processing, checkpoint recovery, and local job tracking so technical meaning stays consistent across large files.
 
@@ -38,6 +38,8 @@ Manufacturing translation often fails when generic language tools do not underst
 ## Public Repository Safety
 
 This repository intentionally excludes private runtime data and real operating documents. It is designed to show the application architecture and engineering implementation without exposing confidential information.
+
+Organization logos and branded production UI assets are also intentionally excluded.
 
 Do not commit:
 

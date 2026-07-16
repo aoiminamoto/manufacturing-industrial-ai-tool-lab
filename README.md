@@ -27,9 +27,14 @@ Manufacturing AI quality depends not only on model capability, but on the qualit
 
 ## Current Lab Projects
 
-### 1. JP-EN Plant Translation Tool Concept
+### 1. Manufacturing AI Translation Platform
 
-A glossary-controlled manufacturing translation workflow that applies validated terminology before AI translation.
+A governed Japanese-to-English manufacturing translation shikumi combining controlled knowledge, resilient document workflows, engineering review, and a path from pilot deployment to enterprise Yokoten.
+
+- [Project overview](projects/jp-en-plant-translator/)
+- [High-level architecture](docs/architecture/manufacturing-ai-translation-platform.md)
+- [Platform evolution case study](docs/case-studies/manufacturing-ai-translation-platform-evolution.md)
+- [Production-readiness roadmap](docs/runbooks/manufacturing-ai-platform-production-readiness.md)
 
 ### 2. Manufacturing AI Ontology Concept
 
