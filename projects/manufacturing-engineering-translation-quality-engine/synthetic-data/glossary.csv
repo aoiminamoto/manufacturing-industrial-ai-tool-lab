@@ -1,0 +1,4 @@
+japanese,english,status,source
+非常停止,Emergency Stop,approved,synthetic-engineering-standard
+運転準備,Ready to Run,approved,synthetic-engineering-standard
+保守モード,Maintenance Mode,draft,synthetic-review-queue
