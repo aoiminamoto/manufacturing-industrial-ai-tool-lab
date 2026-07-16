@@ -10,7 +10,7 @@ Manufacturing translation often fails when generic language tools do not underst
 
 - Preserve approved technical terminology through a local glossary
 - Translate only Japanese content when processing mixed-language files
-- Support large Word, Excel, text, CSV, and robot-program files
+- Support large Word, PowerPoint, Excel, text, CSV, and robot-program files
 - Resume work after interruption instead of restarting long translations
 - Track translation jobs locally without sending runtime history to the repository
 - Separate public-safe source code from private runtime files and company data
@@ -25,7 +25,7 @@ Manufacturing translation often fails when generic language tools do not underst
   - Supplier email translation
   - Product catalog and specification translation
   - Kawasaki robot `.as` / `.ad` file comments and labels
-- TXT, CSV, DOCX, XLSX, XLSM, AS, and AD upload support
+- TXT, CSV, DOCX, PPTX, XLSX, XLSM, AS, and AD upload support
 - Large-file processing up to 100 MB
 - Japanese-only cell filtering for Excel files
 - Controlled parallel batch translation for faster long documents

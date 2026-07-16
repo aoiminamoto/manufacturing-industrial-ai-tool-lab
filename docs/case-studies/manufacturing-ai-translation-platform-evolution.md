@@ -34,6 +34,16 @@ Checkpoint recovery, resumable jobs, structured error handling, and progress vis
 
 A shared-server pilot can validate value, but sustained daily use requires IT-managed infrastructure, authentication, monitoring, backup, capacity testing, support ownership, and a phased rollout plan.
 
+### Shared applications need an explicit ownership boundary
+
+Background-job persistence introduced a multi-user failure mode: a globally selected "latest job" could expose another user's file name, progress, or result in the shared UI. The correction was architectural rather than cosmetic. Job creation, queries, stop controls, retry behavior, result retrieval, and checkpoint paths were scoped to one opaque browser-session owner.
+
+This was validated with two simulated users, including same-name document submission and owner-scoped stop-all behavior. The design improves shared-pilot privacy while preserving an honest boundary: an anonymous browser token is not enterprise authentication.
+
+### Bidirectional and presentation workflows require explicit product contracts
+
+The platform added direction selection before text or document translation and extended document handling to PowerPoint presentations. Translation direction, slide-oriented wording, supported formats, and file-size limits are presented before execution so engineers can understand the output contract instead of discovering behavior after a long-running job.
+
 ## Current Public-Safe Evidence
 
 This repository provides:

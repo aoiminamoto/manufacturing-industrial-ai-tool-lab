@@ -2210,10 +2210,13 @@ def extract_text_blocks(raw: bytes, file_name: str) -> list[TextBlock]:
     if lower_name.endswith(".docx"):
         return extract_docx_blocks(raw)
 
+    if lower_name.endswith(".pptx"):
+        return extract_pptx_blocks(raw)
+
     if lower_name.endswith((".xlsx", ".xlsm")):
         return extract_xlsx_blocks(raw)
 
-    raise ValueError("Supported document types: CSV, TXT, AS, AD, DOCX, XLSX, XLSM.")
+    raise ValueError("Supported document types: CSV, TXT, AS, AD, DOCX, PPTX, XLSX, XLSM.")
 
 
 def no_blocks_error_message(file_name: str) -> str:
@@ -2224,7 +2227,7 @@ def no_blocks_error_message(file_name: str) -> str:
         )
     return (
         "No translatable text was found in this document. "
-        "Upload a CSV, TXT, AS, AD, DOCX, XLSX, or XLSM file with selectable text."
+        "Upload a CSV, TXT, AS, AD, DOCX, PPTX, XLSX, or XLSM file with selectable text."
     )
 
 
@@ -2373,10 +2376,13 @@ def build_translated_document(
     if lower_name.endswith(".docx"):
         return build_translated_docx(raw, translations, source_by_location, keep_source_with_translation)
 
+    if lower_name.endswith(".pptx"):
+        return build_translated_pptx(raw, translations)
+
     if lower_name.endswith((".xlsx", ".xlsm")):
         return build_translated_xlsx(raw, translations, source_by_location, keep_source_with_translation)
 
-    raise ValueError("Supported document types: CSV, TXT, AS, AD, DOCX, XLSX, XLSM.")
+    raise ValueError("Supported document types: CSV, TXT, AS, AD, DOCX, PPTX, XLSX, XLSM.")
 
 
 def build_translated_docx(
@@ -2507,6 +2513,8 @@ def mime_type(file_name: str) -> str:
         return "text/plain"
     if lower_name.endswith(".docx"):
         return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if lower_name.endswith(".pptx"):
+        return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     if lower_name.endswith(".xlsx"):
         return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     if lower_name.endswith(".xlsm"):
@@ -3418,10 +3426,10 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
     if has_current_job:
         return
 
-    st.caption("Upload document (CSV, TXT, AS, AD, DOCX, XLSX, XLSM | Max 100 MB)")
+    st.caption("Upload document (CSV, TXT, AS, AD, DOCX, PPTX, XLSX, XLSM | Max 100 MB)")
     uploaded_document = st.file_uploader(
         "Upload document (Max 100 MB)",
-        type=["csv", "txt", "as", "ad", "docx", "xlsx", "xlsm"],
+        type=["csv", "txt", "as", "ad", "docx", "pptx", "xlsx", "xlsm"],
         label_visibility="collapsed",
     )
 

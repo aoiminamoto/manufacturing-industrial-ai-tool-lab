@@ -14,6 +14,8 @@ Use this index to connect each contribution claim to verifiable public or privat
 | E-008 | Led deployment or production-readiness validation | Add verified date | Sanitized roadmap or test summary | IT approval, capacity test, deployment record | Not yet documented |
 | E-009 | Enabled Yokoten to another team or plant | Add verified date | Sanitized public summary after approval | Request, training, rollout, acceptance confirmation | Not yet documented |
 | E-010 | Received independent manager or engineer confirmation | Add verified date | Optional public excerpt with consent | Signed factual confirmation | Not yet documented |
+| E-011 | Added bidirectional text/document workflow and PowerPoint document handling | 2026-07-16 | Phase 6 timeline, project README, PPTX-capable public-safe prototype | Sanitized regression outputs and representative test files | Publicly documented; private implementation evidence retained |
+| E-012 | Designed and validated session-owned document jobs for a concurrent shared pilot | 2026-07-16 | ADR-006, architecture, case study, Phase 6 timeline | Implementation diff, two-session regression output, deployment/change record | Publicly documented; private validation retained |
 
 ## Private Evidence Folder Recommendation
 
