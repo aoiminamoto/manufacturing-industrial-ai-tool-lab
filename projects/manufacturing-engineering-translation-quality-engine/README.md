@@ -35,7 +35,8 @@ Requirement-Specific Output + Review Evidence
 
 ## Demonstrated capabilities
 
-- Requirement profiles for PLC, robot, HMI, and structured-file outputs
+- Requirement profiles for PLC, safety PLC, robot, HMI, and structured-file outputs
+- User-visible output contracts designed around floor-level engineering workflows
 - Translation of Japanese fragments without rewriting surrounding English
 - Approved-term injection before model translation
 - Preservation checks for addresses, identifiers, model codes, and robot instructions
@@ -43,6 +44,19 @@ Requirement-Specific Output + Review Evidence
 - Human-readable glossary-hit and quality-check evidence
 - A translator adapter boundary: the public demo requires no external API
 - Unit tests using only synthetic examples
+
+## Plant-floor output contracts
+
+The output document is part of the engineering requirement, not an afterthought. The UI should tell users what to expect before processing, and reconstruction should enforce the same promise.
+
+| Public-safe profile | Output behavior | Floor-level need addressed |
+|---|---|---|
+| PLC comment table | Preserve Japanese; place English in the adjacent right column | Side-by-side technical review and correction |
+| Safety PLC comment table | Preserve Japanese; place English in the adjacent right column | Traceable review of safety-related wording |
+| HMI text | Replace eligible Japanese in place | Reuse the translated file in its original display structure |
+| Robot program | Replace only eligible Japanese comments in place | Reuse the program while protecting instructions and syntax |
+
+This profile-specific design demonstrates the conversion of manufacturing-user needs into explicit software behavior: review-oriented formats remain bilingual, while reuse-oriented formats receive structure-preserving in-place output.
 
 ## Quick start
 
@@ -67,9 +81,11 @@ Expected demo behavior:
 - [Retrospective evolution timeline](docs/evolution-timeline.md)
 - [Public-safe engineering case study](docs/case-study.md)
 - [Security and intellectual-property boundary](docs/security-and-ip-boundary.md)
+- [Engineering contribution and lead-level competencies](docs/contribution-and-leadership.md)
 - [ADR-001: Separate deterministic controls from probabilistic translation](docs/architecture-decisions/ADR-001-deterministic-controls.md)
 - [ADR-002: Only approved terminology may act as memory](docs/architecture-decisions/ADR-002-approved-memory.md)
 - [ADR-003: Reconstruct the original engineering structure](docs/architecture-decisions/ADR-003-structure-preservation.md)
+- [ADR-004: Make the output document a user-visible contract](docs/architecture-decisions/ADR-004-floor-output-contracts.md)
 
 ## Evidence status
 
@@ -81,4 +97,4 @@ All examples are synthetic. This project contains no company names, logos, inter
 
 ## Authorship
 
-Architecture, engineering requirements, implementation direction, validation strategy, and public portfolio documentation: **Aoi Minamoto**.
+Architecture, manufacturing workflow requirements, profile-specific output design, implementation direction, validation strategy, and public portfolio documentation: **Aoi Minamoto**.

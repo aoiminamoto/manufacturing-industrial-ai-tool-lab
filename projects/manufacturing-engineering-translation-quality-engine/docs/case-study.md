@@ -13,6 +13,8 @@ Aoi Minamoto defined and implemented a quality-engine approach that places deter
 - introduced approved terminology with visible match evidence;
 - protected identifiers before translation;
 - reconstructed engineering outputs in their original structure and encoding;
+- designed profile-specific output documents around floor-level review and reuse needs;
+- communicated the expected output placement in the UI before processing;
 - converted hidden failure modes into explicit checks and warnings;
 - separated public architecture evidence from private organizational artifacts.
 
@@ -21,6 +23,12 @@ Aoi Minamoto defined and implemented a quality-engine approach that places deter
 The synthetic source `Ready signal M500 (非常停止)` contains English, a technical address, and an approved Japanese term. The engine translates only the controlled Japanese span, preserves `M500`, and records the terminology match. An unknown Japanese term remains visible and fails the review gate instead of being silently accepted.
 
 For the synthetic robot example, only text following the comment delimiter is eligible for translation. Program instructions and the selected source encoding remain unchanged.
+
+## User-centered output design
+
+The design distinguishes between two plant-floor workflows. Review-oriented PLC tables retain Japanese and add English in an adjacent column so engineers can compare, correct, and approve each row. Reuse-oriented HMI and robot files replace only eligible Japanese in place so the translated artifact retains the structure needed by the downstream engineering workflow.
+
+This is an output-document architecture decision, not a cosmetic UI preference. The interface explains the behavior before the job begins, the reconstruction layer enforces it, and tests verify the contract. It demonstrates the ability to convert manufacturing-user needs into explicit and maintainable software behavior.
 
 ## Architectural significance
 

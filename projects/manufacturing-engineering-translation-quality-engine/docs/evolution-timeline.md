@@ -4,7 +4,7 @@ This timeline was documented on **2026-07-16** from privately retained developme
 
 ## Stage 1 - Engineering-file constraints (late June 2026)
 
-The work moved from general text translation to requirement-specific PLC comment handling. The central insight was that existing English, technical addresses, and the original table structure are part of the engineering data and must be preserved.
+The work moved from general text translation to requirement-specific PLC comment handling. The central insight was that existing English, technical addresses, and the original table structure are part of the engineering data and must be preserved. For review-oriented outputs, the source remained visible and English was placed in an adjacent column.
 
 **Growth demonstrated:** translated the user need into deterministic file-handling requirements.
 
@@ -22,7 +22,7 @@ The architecture expanded to program-like engineering files. Translation scope w
 
 ## Stage 4 - Multi-profile quality engine (July 7, 2026)
 
-PLC, robot, HMI, and document workflows were organized around common controls: terminology governance, protected identifiers, format-aware processing, progress visibility, and reviewable output.
+PLC, safety PLC, robot, HMI, and document workflows were organized around common controls: terminology governance, protected identifiers, format-aware processing, progress visibility, and reviewable output. Output behavior became an explicit profile contract: bilingual adjacent columns for review workflows and in-place replacement for structure-dependent reuse workflows.
 
 **Growth demonstrated:** evolved isolated fixes into a reusable engineering mechanism.
 

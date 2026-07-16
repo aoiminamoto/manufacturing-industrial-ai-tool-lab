@@ -40,11 +40,12 @@ A governed Japanese-to-English manufacturing translation shikumi combining contr
 
 ### 2. Manufacturing Engineering Translation Quality Engine
 
-A clean-room reference implementation of a reusable quality layer for requirement-specific engineering translation outputs. It demonstrates controlled terminology, protected identifiers, mixed-language fragment handling, format-preserving reconstruction, and deterministic validation with synthetic examples.
+A clean-room reference implementation of a reusable quality layer for requirement-specific engineering translation outputs. It demonstrates controlled terminology, protected identifiers, plant-floor output contracts, mixed-language fragment handling, format-preserving reconstruction, and deterministic validation with synthetic examples.
 
 - [Project overview](projects/manufacturing-engineering-translation-quality-engine/)
 - [Architecture](projects/manufacturing-engineering-translation-quality-engine/docs/architecture.md)
 - [Retrospective evolution timeline](projects/manufacturing-engineering-translation-quality-engine/docs/evolution-timeline.md)
+- [Engineering contribution and architecture leadership record](projects/manufacturing-engineering-translation-quality-engine/docs/contribution-and-leadership.md)
 
 ## Future Concepts
 
