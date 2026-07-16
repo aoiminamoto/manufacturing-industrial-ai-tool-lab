@@ -71,6 +71,8 @@ These controls surround the AI model. The model provides contextual reasoning; t
 - [High-level platform architecture](../../docs/architecture/manufacturing-ai-translation-platform.md)
 - [Platform evolution case study](../../docs/case-studies/manufacturing-ai-translation-platform-evolution.md)
 - [Production-readiness roadmap](../../docs/runbooks/manufacturing-ai-platform-production-readiness.md)
+- [Evolution timeline and evidence framework](../../docs/portfolio/)
+- [Architecture Decision Records](../../docs/architecture-decisions/)
 - [Glossary update runbook](../../docs/runbooks/glossary-update-runbook.md)
 - [Runnable public-safe prototype](apps/term1-glossary-controlled-translator/)
 

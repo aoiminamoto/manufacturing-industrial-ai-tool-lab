@@ -35,6 +35,8 @@ A governed Japanese-to-English manufacturing translation shikumi combining contr
 - [High-level architecture](docs/architecture/manufacturing-ai-translation-platform.md)
 - [Platform evolution case study](docs/case-studies/manufacturing-ai-translation-platform-evolution.md)
 - [Production-readiness roadmap](docs/runbooks/manufacturing-ai-platform-production-readiness.md)
+- [Evolution timeline and evidence framework](docs/portfolio/)
+- [Architecture Decision Records](docs/architecture-decisions/)
 
 ### 2. Manufacturing AI Ontology Concept
 
