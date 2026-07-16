@@ -25,7 +25,7 @@ Manufacturing AI quality depends not only on model capability, but on the qualit
 - Human-centered manufacturing AI systems
 - Governed plant knowledge for reliable AI output
 
-## Current Lab Projects
+## Built Projects
 
 ### 1. Manufacturing AI Translation Platform
 
@@ -38,15 +38,27 @@ A governed Japanese-to-English manufacturing translation shikumi combining contr
 - [Evolution timeline and evidence framework](docs/portfolio/)
 - [Architecture Decision Records](docs/architecture-decisions/)
 
-### 2. Manufacturing AI Ontology Concept
+### 2. Manufacturing Engineering Translation Quality Engine
+
+A clean-room reference implementation of a reusable quality layer for requirement-specific engineering translation outputs. It demonstrates controlled terminology, protected identifiers, mixed-language fragment handling, format-preserving reconstruction, and deterministic validation with synthetic examples.
+
+- [Project overview](projects/manufacturing-engineering-translation-quality-engine/)
+- [Architecture](projects/manufacturing-engineering-translation-quality-engine/docs/architecture.md)
+- [Retrospective evolution timeline](projects/manufacturing-engineering-translation-quality-engine/docs/evolution-timeline.md)
+
+## Future Concepts
+
+These entries describe forward-looking architecture directions; they are not presented as completed tools.
+
+### 1. Manufacturing AI Ontology Concept
 
 A governed semantic foundation connecting plant terminology, PLC/HMI comments, NG codes, alarms, signals, process context, and maintenance actions.
 
-### 3. PLC Fix AI Assistant Concept
+### 2. PLC Fix AI Assistant Concept
 
 A future assistant concept for helping maintenance members interpret machine conditions, NG situations, alarms, and operational symptoms using governed plant knowledge.
 
-### 4. NG Code Intelligence System Concept
+### 3. NG Code Intelligence System Concept
 
 A structured approach for organizing NG codes, failure categories, equipment context, and previous countermeasures.
 
@@ -68,6 +80,7 @@ docs/
   case-studies/
   runbooks/
 projects/
+  manufacturing-engineering-translation-quality-engine/
   jp-en-plant-translator/
   plc-fix-ai-assistant-concept/
   ng-code-intelligence-concept/
