@@ -65,6 +65,20 @@ A shared-pilot iteration extended the broader platform design beyond the origina
 
 The repository records the sanitized architecture, decision logic, and validation approach. Production source, runtime data, internal deployment details, and controlled terminology remain private. Browser-session isolation is a pilot safeguard, not a substitute for authenticated enterprise identity.
 
+### July 17 - Production Hardening and Knowledge Transparency
+
+A subsequent shared-host iteration strengthened operability, adoption measurement, and controlled-knowledge transparency:
+
+- added concurrency-safe aggregate counters for text, document, and image/HMI translation starts while preserving the existing overall-use metric
+- stored aggregate workflow counts in a server-side transactional database without recording user identity, source content, or translated content
+- exposed the complete governed metadata for controlled terms actually used in text and image/HMI translation, including validation, approval, category, and aggregate application count
+- consolidated repeated uses of one controlled term into one review row with a usage count
+- hardened enterprise API connectivity through operating-system certificate trust and proxy-aware process startup
+- improved failure diagnosis by separating certificate, timeout, authentication, API-status, and network-path errors
+- documented the operational limitation of a user-session-dependent shared host and the requirement for an IT-managed scheduled task or service
+
+Private validation included syntax checks, bidirectional terminology-report tests, concurrent counter-update tests, and network-path isolation tests. Public artifacts describe the architecture and validation method without disclosing controlled terminology, infrastructure addresses, credentials, organization identities, or production screenshots.
+
 ## Controlled Knowledge System
 
 The architecture separates four knowledge controls:
@@ -86,6 +100,8 @@ These controls surround the AI model. The model provides contextual reasoning; t
 - [Evolution timeline and evidence framework](../../docs/portfolio/)
 - [Architecture Decision Records](../../docs/architecture-decisions/)
 - [Browser-session task-isolation decision](../../docs/architecture-decisions/ADR-006-browser-session-task-isolation.md)
+- [Controlled-terminology transparency decision](../../docs/architecture-decisions/ADR-007-controlled-terminology-transparency.md)
+- [July 17 production-hardening evidence](../../docs/portfolio/2026-07-17-production-hardening.md)
 - [Glossary update runbook](../../docs/runbooks/glossary-update-runbook.md)
 - [Runnable public-safe prototype](apps/term1-glossary-controlled-translator/)
 
@@ -96,6 +112,9 @@ These controls surround the AI model. The model provides contextual reasoning; t
 - designed resilient processing for large engineering documents
 - introduced reviewability, recovery, job tracking, and usage measurement
 - converted shared global job visibility into an explicit per-session ownership boundary
+- made controlled-term validation and approval metadata visible at the point of engineering review
+- separated aggregate adoption measurement from user identity and translated content
+- diagnosed and hardened operating-system trust, proxy, and process-lifecycle dependencies
 - identified HMI OCR/segmentation as a separate quality layer from translation
 - evaluated shared-server pilot constraints and defined a production-scaling path
 - established a public/private separation model for responsible portfolio evidence

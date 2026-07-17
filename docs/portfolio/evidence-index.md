@@ -16,6 +16,9 @@ Use this index to connect each contribution claim to verifiable public or privat
 | E-010 | Received independent manager or engineer confirmation | Add verified date | Optional public excerpt with consent | Signed factual confirmation | Not yet documented |
 | E-011 | Added bidirectional text/document workflow and PowerPoint document handling | 2026-07-16 | Phase 6 timeline, project README, PPTX-capable public-safe prototype | Sanitized regression outputs and representative test files | Publicly documented; private implementation evidence retained |
 | E-012 | Designed and validated session-owned document jobs for a concurrent shared pilot | 2026-07-16 | ADR-006, architecture, case study, Phase 6 timeline | Implementation diff, two-session regression output, deployment/change record | Publicly documented; private validation retained |
+| E-013 | Added concurrency-safe aggregate usage metrics by translation workflow without logging user content | 2026-07-17 | Phase 7 timeline and production-hardening evidence | Concurrent-update output, runtime database schema, aggregate operational screenshot | Publicly documented; private implementation evidence retained |
+| E-014 | Exposed complete validation and approval metadata for controlled terms used in engineering translation | 2026-07-17 | ADR-007, project README, Phase 7 timeline | Bidirectional regression output, governed glossary schema, review-surface screenshot | Publicly documented; private controlled knowledge retained |
+| E-015 | Diagnosed and hardened certificate, proxy, and process-lifecycle dependencies for a shared host | 2026-07-17 | Architecture, case study, production-hardening evidence | Connectivity test output, startup configuration, operational logs | Publicly documented; private infrastructure evidence retained |
 
 ## Private Evidence Folder Recommendation
 

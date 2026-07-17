@@ -4,7 +4,7 @@
 
 This project is a clean-room, public-safe reference implementation of an engineering translation quality layer. It demonstrates how Japanese-to-English AI translation can be made more dependable for PLC comments, robot-program comments, HMI labels, and structured engineering files.
 
-It is intentionally separate from the repository's [Manufacturing AI Translation Platform](../jp-en-plant-translator/):
+It is intentionally separate from the repository's [Manufacturing AI Translation Platform](../manufacturing-ai-translation-platform/):
 
 - The **platform** demonstrates end-user workflows, governed knowledge, document and image processing, review, and deployment thinking.
 - The **quality engine** demonstrates specialized parsing, terminology control, protected technical identifiers, requirement profiles, structure-preserving reconstruction, and deterministic validation.
