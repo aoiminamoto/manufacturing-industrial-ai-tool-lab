@@ -132,6 +132,46 @@ This timeline is based on the repository's public Git history. It documents the 
 - [High-level platform architecture](../architecture/manufacturing-ai-translation-platform.md)
 - [Platform evolution case study](../case-studies/manufacturing-ai-translation-platform-evolution.md)
 
+## Phase 7 - Production Hardening and Governed-Knowledge Transparency
+
+**Work date:** July 17, 2026
+
+**Public documentation date:** July 17, 2026
+
+**Engineering focus:** Make shared-host operation measurable, diagnosable, and reviewable without exposing user content or private infrastructure.
+
+**Contribution**
+
+- added transactional aggregate workflow counters for text, document, and image/HMI translation starts
+- preserved the existing overall-use metric while separating feature-level adoption signals
+- avoided storing user identity, source text, translated text, or uploaded content in the aggregate metrics
+- exposed complete validation, approval, and category metadata for controlled terms actually used in translation
+- consolidated repeated term use into one knowledge-review row with an application count
+- hardened API connectivity through operating-system certificate trust and proxy-aware startup
+- classified connection failures into actionable certificate, timeout, authentication, API-status, and network-path categories
+- identified interactive-session hosting and duplicate supervisors as operational risks requiring an IT-managed service boundary
+
+**Private validation retained**
+
+- concurrent counter-update test
+- JP-to-EN and EN-to-JP complete-metadata regression tests
+- syntax and application-start checks
+- certificate, proxy-path, and authentication-layer connectivity tests
+- supervised stop/start and port-listener verification
+
+**Evidence boundary**
+
+- public: sanitized decision record, architecture, case study, timeline, and validation summary
+- private: production source, runtime logs, aggregate counts, controlled glossary, reviewer identities, host configuration, and operational screenshots
+- not yet claimed: 24/7 availability, managed-cloud deployment, authenticated enterprise access, capacity limit, or cross-plant rollout
+
+**Public evidence**
+
+- [Controlled-terminology transparency decision](../architecture-decisions/ADR-007-controlled-terminology-transparency.md)
+- [July 17 production-hardening evidence](2026-07-17-production-hardening.md)
+- [High-level platform architecture](../architecture/manufacturing-ai-translation-platform.md)
+- [Production-readiness roadmap](../runbooks/manufacturing-ai-platform-production-readiness.md)
+
 ## Next Verifiable Milestones
 
 Future milestones should be added only after evidence exists:

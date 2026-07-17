@@ -10,6 +10,7 @@ This folder organizes public-safe evidence of the Manufacturing AI Translation P
 4. [Manager and engineer confirmation template](manager-engineer-confirmation-template.md) - factual third-party validation guide
 5. [Deployment and Yokoten evidence template](deployment-yokoten-evidence-template.md) - rollout and reuse evidence guide
 6. [Architecture Decision Records](../architecture-decisions/) - documented engineering decisions and tradeoffs
+7. [July 17 production-hardening evidence](2026-07-17-production-hardening.md) - sanitized implementation and validation record
 
 ## Evidence Integrity Rules
 

@@ -15,6 +15,8 @@ This roadmap describes the high-level transition from an engineering pilot to a 
 - conduct staged load tests using realistic translation workloads
 - validate authentication, authorization, data retention, and audit requirements
 - test API limits, timeout handling, restart behavior, backup, and recovery
+- validate operating-system certificate trust, approved proxy routing, and outbound API policy under the production service identity
+- verify that only one supervisor or service instance can run and that restart controls are operationally clear
 - identify safe concurrency limits before broader rollout
 
 ## Phase 3 — IT-Managed Production Service
@@ -23,6 +25,7 @@ This roadmap describes the high-level transition from an engineering pilot to a 
 - add enterprise identity and role-based access
 - separate interactive web sessions from queued translation workers
 - centralize secrets, logs, metrics, backups, and operational alerts
+- run independently of an interactive remote-desktop session through an IT-managed service identity
 - define support ownership, incident response, and release management
 
 ## Phase 4 — Scale and Yokoten

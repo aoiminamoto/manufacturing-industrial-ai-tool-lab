@@ -31,7 +31,7 @@ Manufacturing AI quality depends not only on model capability, but on the qualit
 
 A governed Japanese-English manufacturing translation shikumi combining controlled knowledge, resilient document workflows, PowerPoint coverage, shared-session task isolation, engineering review, and a path from pilot deployment to enterprise Yokoten.
 
-- [Project overview](projects/jp-en-plant-translator/)
+- [Project overview](projects/manufacturing-ai-translation-platform/)
 - [High-level architecture](docs/architecture/manufacturing-ai-translation-platform.md)
 - [Platform evolution case study](docs/case-studies/manufacturing-ai-translation-platform-evolution.md)
 - [Production-readiness roadmap](docs/runbooks/manufacturing-ai-platform-production-readiness.md)
@@ -82,7 +82,7 @@ docs/
   runbooks/
 projects/
   manufacturing-engineering-translation-quality-engine/
-  jp-en-plant-translator/
+  manufacturing-ai-translation-platform/
   plc-fix-ai-assistant-concept/
   ng-code-intelligence-concept/
 synthetic-data/

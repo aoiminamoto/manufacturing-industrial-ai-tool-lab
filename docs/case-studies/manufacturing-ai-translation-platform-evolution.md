@@ -44,6 +44,16 @@ This was validated with two simulated users, including same-name document submis
 
 The platform added direction selection before text or document translation and extended document handling to PowerPoint presentations. Translation direction, slide-oriented wording, supported formats, and file-size limits are presented before execution so engineers can understand the output contract instead of discovering behavior after a long-running job.
 
+### Controlled terminology should be explainable at the review surface
+
+An aggregate "glossary matches" number did not give engineers enough information to verify what governed knowledge shaped the result. The review design was extended to show the complete metadata for each controlled term actually used, while consolidating repeated applications into a count. This turns terminology from hidden prompt context into reviewable manufacturing knowledge.
+
+### Hosted reliability includes trust, proxy, and process lifecycle
+
+A successful local API call did not guarantee that the shared host used the same network path. Diagnostic tests separated DNS and port reachability from certificate trust, proxy routing, and API authentication. The hosted process was hardened to use operating-system certificate trust, resolve the approved proxy path at startup, and report actionable failure categories.
+
+The same investigation exposed a lifecycle boundary: a process started inside an interactive remote session is not a 24/7 service. The interim supervisor can restart an application process, but unattended availability requires one IT-managed scheduled task or service account, explicit file permissions, and duplicate-instance prevention.
+
 ## Current Public-Safe Evidence
 
 This repository provides:
