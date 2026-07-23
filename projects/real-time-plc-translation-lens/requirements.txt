@@ -1,0 +1,9 @@
+starlette
+uvicorn
+openai
+httpx
+truststore
+python-dotenv
+pandas
+openpyxl
+pillow
