@@ -57,17 +57,9 @@ A mobile camera prototype for detecting Japanese PLC/HMI comments, applying cont
 
 These entries describe forward-looking architecture directions; they are not presented as completed tools.
 
-### 1. Manufacturing AI Ontology Concept
+### Manufacturing AI Ontology Concept
 
 A governed semantic foundation connecting plant terminology, PLC/HMI comments, NG codes, alarms, signals, process context, and maintenance actions.
-
-### 2. PLC Fix AI Assistant Concept
-
-A future assistant concept for helping maintenance members interpret machine conditions, NG situations, alarms, and operational symptoms using governed plant knowledge.
-
-### 3. NG Code Intelligence System Concept
-
-A structured approach for organizing NG codes, failure categories, equipment context, and previous countermeasures.
 
 ## Conceptual Architecture
 
@@ -90,8 +82,6 @@ projects/
   manufacturing-engineering-translation-quality-engine/
   manufacturing-ai-translation-platform/
   real-time-plc-translation-lens/
-  plc-fix-ai-assistant-concept/
-  ng-code-intelligence-concept/
 synthetic-data/
 ```
 
