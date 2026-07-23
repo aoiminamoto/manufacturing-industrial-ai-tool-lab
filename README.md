@@ -47,6 +47,12 @@ A clean-room reference implementation of a reusable quality layer for requiremen
 - [Retrospective evolution timeline](projects/manufacturing-engineering-translation-quality-engine/docs/evolution-timeline.md)
 - [Engineering contribution and architecture leadership record](projects/manufacturing-engineering-translation-quality-engine/docs/contribution-and-leadership.md)
 
+### 3. Real-Time PLC Translation Lens
+
+A mobile camera prototype for detecting Japanese PLC/HMI comments, applying controlled manufacturing terminology, and placing reviewable English translations over the live screen image. The public version uses synthetic glossary examples and keeps camera frames in memory.
+
+- [Project overview and runnable prototype](projects/real-time-plc-translation-lens/)
+
 ## Future Concepts
 
 These entries describe forward-looking architecture directions; they are not presented as completed tools.
@@ -83,6 +89,7 @@ docs/
 projects/
   manufacturing-engineering-translation-quality-engine/
   manufacturing-ai-translation-platform/
+  real-time-plc-translation-lens/
   plc-fix-ai-assistant-concept/
   ng-code-intelligence-concept/
 synthetic-data/
