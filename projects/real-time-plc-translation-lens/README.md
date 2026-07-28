@@ -6,32 +6,29 @@ A public-safe mobile camera prototype that turns one Japanese PLC/HMI screen int
 
 ## User Flow
 
-1. Open the application in a camera-capable browser.
-2. Align one PLC or HMI screen and select **Scan**.
-3. The vision model locates visible Japanese engineering labels.
-4. Controlled glossary terms are matched before contextual translation.
-5. English labels are overlaid at the detected screen positions; governed terms are highlighted.
-6. Move to the next screen and repeat.
+1. Open the application in a camera-capable mobile browser.
+2. Use the default **ACCURATE** mode, or select **FAST** for large, clear text.
+3. Align one PLC or HMI screen and select **SCAN**.
+4. The vision model locates Japanese labels and returns contextual draft English.
+5. Controlled glossary terms are matched; complex controlled sentences use a
+   protected-marker OpenAI translation path.
+6. English replaces Japanese at the detected screen position; governed terms are red.
+7. Select **NEXT SCREEN**, move the camera, and repeat.
 
 ## Architecture
 
-```text
-Live camera frame (in memory)
-        |
-        v
-Vision OCR + bounding boxes
-        |
-        v
-Synthetic/approved glossary matching
-        |
-        v
-Contextual manufacturing translation
-        |
-        v
-Reviewable English screen overlay
+```mermaid
+flowchart LR
+    A["Full-screen camera"] --> B["Vision OCR + bbox"]
+    B --> C["JP glossary match"]
+    C --> D["OpenAI contextual translation"]
+    D --> E["Location-aligned English overlay"]
 ```
 
-The prototype separates visual detection from terminology control and translation so each quality layer can be evaluated independently.
+The prototype separates visual detection, terminology governance, contextual
+translation, and rendering so each quality layer can be evaluated independently.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete runtime paths, component
+boundaries, accuracy modes, and security assumptions.
 
 ## Run Locally
 
@@ -55,6 +52,14 @@ Open `http://localhost:8505` for a desktop-camera test. Mobile browsers generall
 - `PLC_LENS_GLOSSARY_PATH`: optional path to a CSV or XLSX glossary containing `JP` and `EN` columns.
 
 The included `glossary.csv` contains synthetic examples and can be replaced with an approved glossary outside source control.
+
+## Scan Modes
+
+- **ACCURATE** (default): high-detail vision for small PLC text and reliable placement.
+- **FAST**: lower-detail processing for large, clear text.
+
+The browser remembers the selected mode. Accurate mode remains the default because
+the project prioritizes translation quality over latency.
 
 ## Safety and Limitations
 
