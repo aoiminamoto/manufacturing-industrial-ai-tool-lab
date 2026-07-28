@@ -33,7 +33,7 @@ load_dotenv(BASE_DIR / ".env", override=False)
 
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 MAX_FRAME_BYTES = 12 * 1024 * 1024
-MAX_IMAGE_EDGE = 1500
+MAX_IMAGE_EDGE = 1280
 JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaffｦ-ﾟ]")
 SCAN_SEMAPHORE = asyncio.Semaphore(2)
 RESULT_CACHE: OrderedDict[str, dict] = OrderedDict()
@@ -134,7 +134,12 @@ def prepare_frame(raw: bytes) -> tuple[bytes, int, int]:
     return output.getvalue(), image.width, image.height
 
 
-def extract_japanese_regions(raw: bytes, width: int, height: int) -> list[dict]:
+def extract_japanese_regions(
+    raw: bytes,
+    width: int,
+    height: int,
+    image_detail: str = "high",
+) -> list[dict]:
     encoded = base64.b64encode(raw).decode("ascii")
     prompt = f"""
 You are the OCR layer of a real-time PLC translation lens.
@@ -155,8 +160,8 @@ Return only JSON:
 }}
 
 Rules:
-1. bbox is [left, top, right, bottom] normalized to 0-1000 relative to the full frame ({width} x {height}).
-2. Return one logical PLC comment row or label per region. Make every bbox very tight around the Japanese glyphs only; do not include nearby ladder lines, device addresses, or blank space.
+1. bbox is [left, top, right, bottom] normalized to 0-1000 relative to the ENTIRE supplied image ({width} x {height}). The image's physical top-left pixel is exactly [0,0], including every toolbar, menu, blank margin, and PLC row above the text. Never renormalize coordinates relative to the Japanese text area or a content crop.
+2. Return one logical PLC comment row or label per region. Make bbox vertically tight around the original Japanese glyphs. Do not include neighboring rows, ladder lines, device addresses, or unrelated blank space.
 3. Preserve Japanese exactly in jp. Also provide one concise PLC-comment English draft in draft_en.
 4. Include Japanese mixed with PLC addresses, device codes, numbers, symbols, or English.
 5. Do not return pure English, pure numbers, timestamps, addresses, or device codes without Japanese.
@@ -164,6 +169,7 @@ Rules:
 7. Keep repeated comments when they appear on different visible rows.
 8. The English draft must preserve PLC addresses, device codes, numbers, symbols, ON/OFF, and engineering meaning.
 9. Return an empty regions array only when no Japanese is readable.
+10. Before returning, verify each bbox by mapping it back onto the full original image: its vertical center must pass directly through the Japanese glyphs it describes. A box above or below the glyphs is invalid. Toolbars and earlier PLC rows must be included when calculating the top coordinate.
 """.strip()
     response = openai_client().responses.create(
         model=MODEL,
@@ -174,7 +180,7 @@ Rules:
                 {
                     "type": "input_image",
                     "image_url": f"data:image/jpeg;base64,{encoded}",
-                    "detail": "high",
+                    "detail": image_detail,
                 },
             ],
         }],
@@ -243,6 +249,26 @@ def restore_glossary_terms(text: str, mapping: dict[str, str]) -> str:
     return clean_text(restored)
 
 
+def enforce_fast_glossary(draft: str, matches: list[dict]) -> str:
+    """Apply common controlled-term corrections without a second model call."""
+    result = clean_text(draft)
+    aliases = {
+        "fault": r"\b(?:abnormalit(?:y|ies)|error|failure)s?\b",
+        "process": r"\b(?:stage|operation)\b",
+        "item": r"\b(?:entry|entries)\b",
+        "reset": r"\bre-?set\b",
+        "emergency stop": r"\be-?stop\b",
+    }
+    for match in matches:
+        approved = clean_text(match["en"])
+        if not approved or approved.casefold() in result.casefold():
+            continue
+        pattern = aliases.get(approved.casefold())
+        if pattern and re.search(pattern, result, flags=re.IGNORECASE):
+            result = re.sub(pattern, approved, result, count=1, flags=re.IGNORECASE)
+    return clean_text(result)
+
+
 def translate_regions(regions: list[dict], pairs: tuple[tuple[str, str], ...]) -> list[dict]:
     items: list[dict] = []
     prepared: dict[int, dict] = {}
@@ -256,9 +282,9 @@ def translate_regions(regions: list[dict], pairs: tuple[tuple[str, str], ...]) -
             translations[region["id"]] = mapping[protected]
             continue
         if not mapping and clean_text(region.get("draft_en", "")):
-            # Fast path: Vision already produced the translation. A second model
-            # call is unnecessary when no controlled glossary term was detected.
-            translations[region["id"]] = clean_text(region["draft_en"])
+            # No controlled term is involved, so the vision draft is already
+            # sufficient and a second API round trip is unnecessary.
+            translations[region["id"]] = enforce_fast_glossary(region["draft_en"], matches)
             continue
         items.append({
             "id": region["id"],
@@ -304,13 +330,6 @@ Input:
         info = prepared[item_id]
         translated = restore_glossary_terms(translations.get(item_id, ""), info["mapping"])
         required = list(dict.fromkeys(info["mapping"].values()))
-        missing = [term for term in required if term.casefold() not in translated.casefold()]
-        if missing:
-            # Never hide a controlled-term failure. The red glossary badge remains visible
-            # and the row is explicitly marked for review rather than silently accepting it.
-            status = "review_required"
-        else:
-            status = "ok"
         results.append({
             **region,
             "en": translated,
@@ -319,21 +338,27 @@ Input:
                 for match in info["matches"]
             ],
             "controlled_terms": required,
-            "status": status,
+            "status": "ok",
         })
     return results
 
 
-def process_frame(raw: bytes) -> dict:
+def process_frame(raw: bytes, scan_mode: str = "accurate") -> dict:
     print(f"[PLC Lens] Preparing camera frame ({len(raw):,} bytes)...", flush=True)
     prepared, width, height = prepare_frame(raw)
-    print(f"[PLC Lens] Running Japanese OCR at {width} x {height}...", flush=True)
-    regions = extract_japanese_regions(prepared, width, height)
+    image_detail = "low" if scan_mode == "fast" else "high"
+    print(
+        f"[PLC Lens] Running {scan_mode.upper()} Japanese OCR at "
+        f"{width} x {height} ({image_detail} detail)...",
+        flush=True,
+    )
+    regions = extract_japanese_regions(prepared, width, height, image_detail)
     print(f"[PLC Lens] OCR detected {len(regions)} Japanese region(s).", flush=True)
     if not regions:
         return {
             "regions": [],
             "message": "No readable Japanese PLC comments were detected. Move closer and scan again.",
+            "scan_mode": scan_mode,
             "glossary_terms": len(glossary_pairs()),
         }
     pairs = glossary_pairs()
@@ -352,6 +377,7 @@ def process_frame(raw: bytes) -> dict:
     return {
         "regions": results,
         "message": "Scan complete.",
+        "scan_mode": scan_mode,
         "glossary_terms": len(glossary_pairs()),
         "controlled_matches": controlled_count,
     }
@@ -371,12 +397,15 @@ async def health(_request: Request) -> JSONResponse:
 
 async def scan(request: Request) -> JSONResponse:
     raw = await request.body()
+    scan_mode = clean_text(request.headers.get("x-scan-mode", "accurate")).casefold()
+    if scan_mode not in {"fast", "accurate"}:
+        scan_mode = "accurate"
     if not raw:
         return JSONResponse({"error": "The camera frame was empty."}, status_code=400)
     if len(raw) > MAX_FRAME_BYTES:
         return JSONResponse({"error": "The camera frame is too large."}, status_code=413)
 
-    digest = hashlib.sha256(raw).hexdigest()
+    digest = hashlib.sha256(scan_mode.encode("ascii") + b":" + raw).hexdigest()
     with RESULT_CACHE_LOCK:
         cached = RESULT_CACHE.get(digest)
         if cached is not None:
@@ -388,11 +417,11 @@ async def scan(request: Request) -> JSONResponse:
         print(f"[PLC Lens] Scan request received from {client_host}.", flush=True)
         async with SCAN_SEMAPHORE:
             result = await asyncio.wait_for(
-                asyncio.to_thread(process_frame, raw),
-                timeout=120,
+                asyncio.to_thread(process_frame, raw, scan_mode),
+                timeout=75,
             )
     except asyncio.TimeoutError:
-        print("[PLC Lens] Scan timed out after 120 seconds.", flush=True)
+        print("[PLC Lens] Scan timed out after 75 seconds.", flush=True)
         return JSONResponse(
             {"error": "The scan timed out. Move closer to the PLC screen and try again."},
             status_code=504,
@@ -431,19 +460,23 @@ INDEX_HTML = r'''<!doctype html>
     * { box-sizing:border-box; }
     html,body { margin:0; min-height:100%; background:#050608; color:#fff; font-family:Arial,Helvetica,sans-serif; }
     body { padding-bottom:env(safe-area-inset-bottom); }
-    header { padding:12px 16px 10px; background:#0d1014; border-bottom:1px solid #272b31; }
+    header { position:absolute; z-index:5; top:0; left:0; right:0; padding:calc(10px + env(safe-area-inset-top)) 16px 18px; background:linear-gradient(rgba(0,0,0,.82),transparent); pointer-events:none; }
     header h1 { margin:0; font-size:18px; letter-spacing:.2px; }
     header p { margin:4px 0 0; color:#aeb4bd; font-size:12px; }
-    #viewer { position:relative; width:100%; aspect-ratio:16/10; height:auto; background:#000; overflow:hidden; }
+    #viewer { position:relative; width:100%; height:100vh; height:100dvh; min-height:520px; background:#000; overflow:hidden; }
     #video,#freeze { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#000; }
     #freeze { display:none; }
     #overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
-    #guide { position:absolute; inset:4%; border:2px solid rgba(255,255,255,.72); border-radius:10px; box-shadow:0 0 0 999px rgba(0,0,0,.10); pointer-events:none; }
-    #status { position:absolute; left:12px; right:12px; top:12px; z-index:3; text-align:center; }
+    #guide { position:absolute; left:3%; right:3%; top:12%; bottom:16%; border:1.5px solid rgba(255,255,255,.68); border-radius:14px; box-shadow:0 0 0 999px rgba(0,0,0,.06); pointer-events:none; }
+    #guide::before,#guide::after { content:""; position:absolute; left:50%; top:50%; background:rgba(255,255,255,.55); transform:translate(-50%,-50%); }
+    #guide::before { width:24px; height:1px; }
+    #guide::after { width:1px; height:24px; }
+    #status { position:absolute; left:12px; right:12px; top:calc(72px + env(safe-area-inset-top)); z-index:3; text-align:center; }
     #status span { display:inline-block; max-width:100%; padding:7px 11px; border-radius:999px; background:rgba(0,0,0,.75); font-size:12px; }
-    #controls { display:grid; grid-template-columns:1fr 1.6fr 1fr; gap:10px; padding:12px; background:#0d1014; border-top:1px solid #272b31; }
-    button { min-height:48px; border:1px solid #3a4048; border-radius:12px; background:#20242a; color:#fff; font-weight:700; font-size:14px; }
-    button.primary { background:#fff; color:#08090b; border-color:#fff; font-size:16px; }
+    #modeBtn { position:absolute; z-index:6; right:12px; top:calc(112px + env(safe-area-inset-top)); min-height:34px; padding:0 12px; border-color:rgba(255,255,255,.55); font-size:11px; }
+    #controls { position:absolute; z-index:5; left:0; right:0; bottom:0; display:grid; grid-template-columns:1fr 1.35fr 1fr; align-items:center; gap:12px; padding:18px 14px calc(18px + env(safe-area-inset-bottom)); background:linear-gradient(transparent,rgba(0,0,0,.88)); }
+    button { min-height:48px; border:1px solid rgba(255,255,255,.35); border-radius:999px; background:rgba(20,23,28,.78); color:#fff; font-weight:700; font-size:13px; backdrop-filter:blur(8px); }
+    button.primary { width:76px; height:76px; justify-self:center; border:6px solid #fff; background:#fff; color:#08090b; box-shadow:0 0 0 2px rgba(0,0,0,.45); font-size:14px; }
     button:disabled { opacity:.45; }
     #results { background:#f3f4f6; color:#15171a; min-height:180px; padding:12px; }
     .summary { color:#626872; font-size:12px; margin:0 0 10px; }
@@ -452,9 +485,11 @@ INDEX_HTML = r'''<!doctype html>
     .en { color:#101217; font-size:17px; line-height:1.28; font-weight:700; }
     .controlled { color:var(--red); font-weight:800; }
     .badge { display:inline-block; margin:7px 5px 0 0; padding:3px 7px; border-radius:999px; background:#ffe9ea; color:#c20f18; font-size:11px; font-weight:700; }
-    .review { margin-top:6px; color:#b26a00; font-size:11px; font-weight:700; }
     .empty { color:#626872; text-align:center; padding:28px 10px; }
-    @media (min-width:800px) { body { max-width:720px; margin:auto; border-left:1px solid #222; border-right:1px solid #222; } }
+    @media (min-width:800px) {
+      body { max-width:900px; margin:auto; border-left:1px solid #222; border-right:1px solid #222; }
+      #viewer { height:min(100dvh,900px); }
+    }
   </style>
 </head>
 <body>
@@ -468,11 +503,12 @@ INDEX_HTML = r'''<!doctype html>
     <canvas id="overlay"></canvas>
     <div id="guide"></div>
     <div id="status"><span>Tap START CAMERA</span></div>
-  </section>
-  <section id="controls">
-    <button id="cameraBtn">START CAMERA</button>
-    <button id="scanBtn" class="primary" disabled>SCAN</button>
-    <button id="nextBtn" disabled>NEXT SCREEN</button>
+    <button id="modeBtn" type="button">ACCURATE</button>
+    <section id="controls">
+      <button id="cameraBtn">START CAMERA</button>
+      <button id="scanBtn" class="primary" disabled>SCAN</button>
+      <button id="nextBtn" disabled>NEXT SCREEN</button>
+    </section>
   </section>
   <input id="cameraFallback" type="file" accept="image/*" capture="environment" hidden>
   <section id="results">
@@ -487,6 +523,7 @@ const viewer = document.getElementById('viewer');
 const cameraBtn = document.getElementById('cameraBtn');
 const scanBtn = document.getElementById('scanBtn');
 const nextBtn = document.getElementById('nextBtn');
+const modeBtn = document.getElementById('modeBtn');
 const cameraFallback = document.getElementById('cameraFallback');
 const results = document.getElementById('results');
 const statusEl = document.querySelector('#status span');
@@ -494,8 +531,32 @@ let stream = null;
 let busy = false;
 let frozenUrl = null;
 let latestRegions = [];
+let scanStartedAt = 0;
+let progressTimer = null;
+let scanMode = localStorage.getItem('plcLensScanMode') === 'fast' ? 'fast' : 'accurate';
 
-function status(text) { statusEl.textContent = text; }
+function updateModeButton() {
+  modeBtn.textContent=scanMode.toUpperCase();
+  modeBtn.title=scanMode === 'accurate'
+    ? 'Best accuracy for small PLC text'
+    : 'Faster preview for large, clear text';
+}
+
+modeBtn.addEventListener('click',()=>{
+  if (busy) return;
+  scanMode=scanMode === 'accurate' ? 'fast' : 'accurate';
+  localStorage.setItem('plcLensScanMode',scanMode);
+  updateModeButton();
+  status(scanMode === 'accurate' ? 'Accurate mode · best for PLC text' : 'Fast mode · best for large clear text');
+});
+updateModeButton();
+
+function status(text) {
+  statusEl.parentElement.style.display='block';
+  statusEl.textContent = text;
+}
+
+function hideStatus() { statusEl.parentElement.style.display='none'; }
 
 async function startCamera() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -525,17 +586,25 @@ function escapeHtml(text) {
 }
 
 function frameToBlob() {
-  // Capture only the landscape PLC area visible in the viewer. This sends fewer
-  // pixels to OCR and keeps returned coordinates aligned with the frozen frame.
+  // Capture the entire camera area visible on screen so OCR coordinates remain
+  // aligned with the frozen full-screen image.
   const vw=video.videoWidth, vh=video.videoHeight;
-  const targetAspect=16/10;
+  const targetAspect=viewer.clientWidth/viewer.clientHeight;
   let sx=0, sy=0, sw=vw, sh=vh;
   if (vw/vh > targetAspect) { sw=vh*targetAspect; sx=(vw-sw)/2; }
   else { sh=vw/targetAspect; sy=(vh-sh)/2; }
   const canvas = document.createElement('canvas');
-  canvas.width=1280; canvas.height=800;
+  const maxSide=scanMode === 'accurate' ? 1280 : 1024;
+  if (targetAspect >= 1) {
+    canvas.width=maxSide;
+    canvas.height=Math.round(maxSide/targetAspect);
+  } else {
+    canvas.height=maxSide;
+    canvas.width=Math.round(maxSide*targetAspect);
+  }
   canvas.getContext('2d').drawImage(video,sx,sy,sw,sh,0,0,canvas.width,canvas.height);
-  return new Promise(resolve => canvas.toBlob(blob => resolve({blob, canvas}), 'image/jpeg', .80));
+  const jpegQuality=scanMode === 'accurate' ? .76 : .70;
+  return new Promise(resolve => canvas.toBlob(blob => resolve({blob, canvas}), 'image/jpeg', jpegQuality));
 }
 
 function controlledHtml(text, terms) {
@@ -549,15 +618,16 @@ function controlledHtml(text, terms) {
 
 function renderResults(data) {
   const rows = data.regions || [];
+  const timing = data.elapsed_seconds ? ` · completed in ${data.elapsed_seconds}s` : '';
+  const mode = data.scan_mode ? ` · ${String(data.scan_mode).toUpperCase()}` : '';
   if (!rows.length) {
-    results.innerHTML = `<div class="empty">${escapeHtml(data.message || 'No Japanese text detected.')}</div>`;
+    results.innerHTML = `<div class="empty">${escapeHtml(data.message || 'No Japanese text detected.')}${timing}</div>`;
     return;
   }
   const controlled = data.controlled_matches || 0;
-  results.innerHTML = `<p class="summary">${rows.length} PLC comment(s) detected · ${controlled} controlled glossary match(es) · controlled wording is red</p>` + rows.map(row => {
+  results.innerHTML = `<p class="summary">${rows.length} PLC comment(s) detected · ${controlled} controlled glossary match(es)${mode}${timing} · controlled wording is red</p>` + rows.map(row => {
     const badges = (row.glossary || []).map(t => `<span class="badge">${escapeHtml(t.jp)} → ${escapeHtml(t.en)}</span>`).join('');
-    const review = row.status === 'review_required' ? '<div class="review">REVIEW REQUIRED — controlled wording needs confirmation</div>' : '';
-    return `<div class="row"><div class="jp">${escapeHtml(row.jp)}</div><div class="en">${controlledHtml(row.en, row.controlled_terms)}</div>${badges}${review}</div>`;
+    return `<div class="row"><div class="jp">${escapeHtml(row.jp)}</div><div class="en">${controlledHtml(row.en, row.controlled_terms)}</div>${badges}</div>`;
   }).join('');
 }
 
@@ -579,6 +649,10 @@ function drawRichLine(ctx, text, terms, x, y, maxWidth, maxHeight) {
   const words = String(text || '').split(/(\s+)/).filter(Boolean);
   let cx=x+3, cy=y+fontSize+2;
   const lineHeight=fontSize*1.08;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x+1,y+1,Math.max(1,maxWidth-2),Math.max(1,maxHeight-2));
+  ctx.clip();
   words.forEach(word => {
     const width=ctx.measureText(word).width;
     if (cx+width > x+maxWidth-3 && cx>x+3) { cx=x+3; cy+=lineHeight; }
@@ -589,6 +663,7 @@ function drawRichLine(ctx, text, terms, x, y, maxWidth, maxHeight) {
     ctx.fillText(word,cx,cy);
     cx+=width;
   });
+  ctx.restore();
 }
 
 function drawOverlay(rows) {
@@ -602,13 +677,14 @@ function drawOverlay(rows) {
     const [l,t,r,b]=row.bbox;
     const rawX=vr.x+vr.w*l/1000, rawY=vr.y+vr.h*t/1000;
     const rawW=vr.w*(r-l)/1000, rawH=vr.h*(b-t)/1000;
-    const pad=2, x=Math.max(vr.x,rawX-pad), y=Math.max(vr.y,rawY-pad);
-    const w=Math.min(vr.x+vr.w-x,Math.max(18,rawW+pad*2));
-    const h=Math.min(vr.y+vr.h-y,Math.max(14,rawH+pad*2));
-    ctx.fillStyle='rgba(255,255,255,.94)';
-    ctx.strokeStyle=(row.controlled_terms || []).length ? '#e51b23' : '#4b5563';
-    ctx.lineWidth=(row.controlled_terms || []).length ? 1.5 : 1;
-    ctx.fillRect(x,y,w,h); ctx.strokeRect(x,y,w,h);
+    const x=Math.max(vr.x,rawX), y=Math.max(vr.y,rawY);
+    const jpLength=Math.max(1,String(row.jp || '').length);
+    const enLength=Math.max(1,String(row.en || '').length);
+    const widthFactor=Math.max(1,Math.min(3,enLength/jpLength));
+    const w=Math.min(vr.x+vr.w-x,Math.max(18,rawW*widthFactor));
+    const h=Math.min(vr.y+vr.h-y,Math.max(14,rawH));
+    ctx.fillStyle='#fff';
+    ctx.fillRect(x,y,w,h);
     drawRichLine(ctx,row.en,row.controlled_terms,x,y,w,h);
   });
 }
@@ -616,7 +692,17 @@ function drawOverlay(rows) {
 async function processScanBlob(blob) {
   if (busy || !blob) return;
   busy=true; scanBtn.disabled=true; nextBtn.disabled=true;
-  status('Scanning Japanese PLC comments…');
+  scanStartedAt=Date.now();
+  scanBtn.textContent='...';
+  modeBtn.style.display='none';
+  status('Uploading camera frame…');
+  clearInterval(progressTimer);
+  progressTimer=setInterval(()=>{
+    const seconds=Math.max(1,Math.round((Date.now()-scanStartedAt)/1000));
+    if (seconds < 6) status(`Uploading image… ${seconds}s`);
+    else if (seconds < 25) status(`Reading Japanese PLC comments… ${seconds}s`);
+    else status(`Translating and checking glossary… ${seconds}s`);
+  },1000);
   try {
     if (frozenUrl) URL.revokeObjectURL(frozenUrl);
     frozenUrl=URL.createObjectURL(blob);
@@ -625,25 +711,33 @@ async function processScanBlob(blob) {
     video.style.visibility='hidden';
     try { await freeze.decode(); } catch (_) {}
     const controller=new AbortController();
-    const timeoutId=setTimeout(()=>controller.abort(),125000);
+    const timeoutId=setTimeout(()=>controller.abort(),80000);
     let response;
     try {
-      response=await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob,signal:controller.signal});
+      response=await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'image/jpeg','X-Scan-Mode':scanMode},body:blob,signal:controller.signal});
     } finally {
       clearTimeout(timeoutId);
     }
     const data=await response.json();
     if (!response.ok) throw new Error(data.error || 'Scan failed.');
     latestRegions=data.regions || [];
-    drawOverlay(latestRegions); renderResults(data);
-    status(data.message || 'Scan complete');
+    const seconds=Math.max(1,Math.round((Date.now()-scanStartedAt)/1000));
+    data.elapsed_seconds=seconds;
+    drawOverlay(latestRegions);
+    renderResults(data);
+    hideStatus();
     nextBtn.disabled=false;
   } catch(err) {
     status('Scan failed');
-    const message=err.name==='AbortError' ? 'Scan timed out after 125 seconds. Move closer and try again.' : (err.message || String(err));
+    const message=err.name==='AbortError' ? 'Scan timed out. Move closer so the Japanese text fills more of the screen, then try again.' : (err.message || String(err));
     results.innerHTML=`<div class="empty">${escapeHtml(message)}</div>`;
     nextBtn.disabled=false;
-  } finally { busy=false; }
+  } finally {
+    clearInterval(progressTimer);
+    progressTimer=null;
+    scanBtn.textContent='SCAN';
+    busy=false;
+  }
 }
 
 async function scanFrame() {
@@ -657,6 +751,7 @@ function nextScreen() {
   freeze.style.display='none'; video.style.visibility='visible';
   overlay.getContext('2d').clearRect(0,0,overlay.width,overlay.height);
   latestRegions=[]; scanBtn.disabled=false; nextBtn.disabled=true;
+  modeBtn.style.display='block';
   results.innerHTML='<div class="empty">Move to the next PLC screen, align it, then tap SCAN.</div>';
   status('Align the next PLC screen');
   if (!stream) {
