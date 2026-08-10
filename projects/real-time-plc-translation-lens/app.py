@@ -34,6 +34,7 @@ load_dotenv(BASE_DIR / ".env", override=False)
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 MAX_FRAME_BYTES = 12 * 1024 * 1024
 MAX_IMAGE_EDGE = 1280
+LOCAL_OCR_URL = os.getenv("PLC_LENS_LOCAL_OCR_URL", "http://127.0.0.1:8506/ocr")
 JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaffｦ-ﾟ]")
 SCAN_SEMAPHORE = asyncio.Semaphore(2)
 RESULT_CACHE: OrderedDict[str, dict] = OrderedDict()
@@ -212,6 +213,22 @@ Rules:
     return sorted(regions, key=lambda item: (item["bbox"][1], item["bbox"][0]))
 
 
+def extract_local_ocr_regions(raw: bytes) -> list[dict]:
+    """Get Japanese text and pixel-derived boxes from the localhost OCR sidecar."""
+    response = httpx.post(
+        LOCAL_OCR_URL,
+        content=raw,
+        headers={"Content-Type": "image/jpeg"},
+        timeout=120.0,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    regions = payload.get("regions", [])
+    if not isinstance(regions, list):
+        raise RuntimeError("Local OCR returned an invalid regions payload.")
+    return regions
+
+
 def glossary_matches(text: str, pairs: tuple[tuple[str, str], ...]) -> list[dict]:
     occupied = [False] * len(text)
     matches: list[dict] = []
@@ -347,18 +364,29 @@ def process_frame(raw: bytes, scan_mode: str = "accurate") -> dict:
     print(f"[PLC Lens] Preparing camera frame ({len(raw):,} bytes)...", flush=True)
     prepared, width, height = prepare_frame(raw)
     image_detail = "low" if scan_mode == "fast" else "high"
-    print(
-        f"[PLC Lens] Running {scan_mode.upper()} Japanese OCR at "
-        f"{width} x {height} ({image_detail} detail)...",
-        flush=True,
-    )
-    regions = extract_japanese_regions(prepared, width, height, image_detail)
+    if scan_mode == "accurate":
+        print(
+            f"[PLC Lens] Running LOCAL Japanese OCR at {width} x {height} "
+            "with pixel coordinates...",
+            flush=True,
+        )
+        regions = extract_local_ocr_regions(prepared)
+        ocr_engine = "local-paddleocr-pixel"
+    else:
+        print(
+            f"[PLC Lens] Running FAST Japanese Vision OCR at "
+            f"{width} x {height} ({image_detail} detail)...",
+            flush=True,
+        )
+        regions = extract_japanese_regions(prepared, width, height, image_detail)
+        ocr_engine = "openai-vision-approximate"
     print(f"[PLC Lens] OCR detected {len(regions)} Japanese region(s).", flush=True)
     if not regions:
         return {
             "regions": [],
             "message": "No readable Japanese PLC comments were detected. Move closer and scan again.",
             "scan_mode": scan_mode,
+            "ocr_engine": ocr_engine,
             "glossary_terms": len(glossary_pairs()),
         }
     pairs = glossary_pairs()
@@ -378,13 +406,21 @@ def process_frame(raw: bytes, scan_mode: str = "accurate") -> dict:
         "regions": results,
         "message": "Scan complete.",
         "scan_mode": scan_mode,
+        "ocr_engine": ocr_engine,
         "glossary_terms": len(glossary_pairs()),
         "controlled_matches": controlled_count,
     }
 
 
 async def homepage(_request: Request) -> HTMLResponse:
-    return HTMLResponse(INDEX_HTML)
+    return HTMLResponse(
+        INDEX_HTML,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 async def health(_request: Request) -> JSONResponse:
@@ -680,7 +716,9 @@ function drawOverlay(rows) {
     const x=Math.max(vr.x,rawX), y=Math.max(vr.y,rawY);
     const jpLength=Math.max(1,String(row.jp || '').length);
     const enLength=Math.max(1,String(row.en || '').length);
-    const widthFactor=Math.max(1,Math.min(3,enLength/jpLength));
+    // Keep each replacement near its source comment. Long English text wraps
+    // instead of expanding across neighboring PLC labels.
+    const widthFactor=Math.max(1,Math.min(1.5,enLength/jpLength));
     const w=Math.min(vr.x+vr.w-x,Math.max(18,rawW*widthFactor));
     const h=Math.min(vr.y+vr.h-y,Math.max(14,rawH));
     ctx.fillStyle='#fff';
