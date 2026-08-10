@@ -42,6 +42,8 @@ The public-safe runnable prototype demonstrates:
 - local translation memory and job tracking
 - retry handling, progress reporting, and usage counting
 - protected handling for technical codes and structured content
+- text-box-level PowerPoint translation with semantic-loss quality gates
+- complete matched-glossary row and column visibility in the translation preview
 
 The broader platform architecture also covers an HMI/image workflow:
 
@@ -79,6 +81,21 @@ A subsequent shared-host iteration strengthened operability, adoption measuremen
 
 Private validation included syntax checks, bidirectional terminology-report tests, concurrent counter-update tests, and network-path isolation tests. Public artifacts describe the architecture and validation method without disclosing controlled terminology, infrastructure addresses, credentials, organization identities, or production screenshots.
 
+### August 10 - PowerPoint Semantic Units and Translation Quality Gates
+
+Iterative testing showed that PowerPoint paragraph boundaries can reflect visual formatting rather than linguistic meaning. An initial context-sharing design still produced fragmented English because it required separate output for each stored paragraph. The public-safe prototype now:
+
+- reads every complete text box before translating, regardless of internal line breaks
+- translates continuous prose as one semantic unit while retaining clearly identified list items
+- checks selected actors, conditions, actions, negation, numbers, units, protected codes, glossary requirements, and list counts
+- retries a translation with explicit quality feedback when a high-confidence omission is detected
+- fails explicitly after the retry limit instead of knowingly delivering a deficient result
+- uses zero temperature, a pinned model snapshot, versioned PowerPoint checkpoints, and translation memory as complementary consistency controls
+- preserves user-selected content profiles for PLC/SPLC comments, supplier email, PowerPoint, product catalog, robot programs, and general plant content
+- displays every matched term with every available public-safe glossary column in the translation preview
+
+This milestone was derived from realistic synthetic test cases. It does not claim measured production-quality improvement or independent adoption; those require separate evidence.
+
 ## Controlled Knowledge System
 
 The architecture separates four knowledge controls:
@@ -101,7 +118,9 @@ These controls surround the AI model. The model provides contextual reasoning; t
 - [Architecture Decision Records](../../docs/architecture-decisions/)
 - [Browser-session task-isolation decision](../../docs/architecture-decisions/ADR-006-browser-session-task-isolation.md)
 - [Controlled-terminology transparency decision](../../docs/architecture-decisions/ADR-007-controlled-terminology-transparency.md)
+- [PowerPoint semantic-unit and quality-gate decision](../../docs/architecture-decisions/ADR-008-powerpoint-semantic-units-and-quality-gates.md)
 - [July 17 production-hardening evidence](../../docs/portfolio/2026-07-17-production-hardening.md)
+- [August 10 engineering learning record](../../docs/portfolio/2026-08-10-powerpoint-semantic-quality-learning-record.md)
 - [Glossary update runbook](../../docs/runbooks/glossary-update-runbook.md)
 - [Runnable public-safe prototype](apps/term1-glossary-controlled-translator/)
 
@@ -113,6 +132,8 @@ These controls surround the AI model. The model provides contextual reasoning; t
 - introduced reviewability, recovery, job tracking, and usage measurement
 - converted shared global job visibility into an explicit per-session ownership boundary
 - made controlled-term validation and approval metadata visible at the point of engineering review
+- converted PowerPoint layout boundaries into user-meaningful semantic translation units
+- introduced deterministic semantic-loss checks and correction retries around probabilistic model output
 - separated aggregate adoption measurement from user identity and translated content
 - diagnosed and hardened operating-system trust, proxy, and process-lifecycle dependencies
 - identified HMI OCR/segmentation as a separate quality layer from translation
