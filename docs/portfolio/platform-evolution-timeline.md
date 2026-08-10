@@ -172,6 +172,44 @@ This timeline is based on the repository's public Git history. It documents the 
 - [High-level platform architecture](../architecture/manufacturing-ai-translation-platform.md)
 - [Production-readiness roadmap](../runbooks/manufacturing-ai-platform-production-readiness.md)
 
+## Phase 8 - PowerPoint Semantic Integrity and Reviewable AI Controls
+
+**Work date:** August 10, 2026
+
+**Public documentation date:** August 10, 2026
+
+**Engineering focus:** Correct a document-segmentation failure discovered through realistic testing, then prevent fluent but semantically incomplete PowerPoint output from passing silently.
+
+**Discovery and contribution**
+
+- observed that one sentence split by PowerPoint paragraphs was translated as unrelated fragments
+- tested an intermediate context-sharing design and identified that paragraph-by-paragraph output still imposed an invalid Japanese-to-English alignment
+- redesigned extraction and reconstruction around the complete PowerPoint text box as the semantic unit
+- preserved genuinely separate list items while allowing continuous prose to reorder naturally
+- detected a later candidate that omitted an explicit actor despite being fluent and concise
+- added deterministic semantic coverage checks and correction retries for selected actors, conditions, actions, negation, identifiers, numbers, units, glossary requirements, and list counts
+- pinned the public prototype's default model snapshot, lowered temperature to zero, and versioned PowerPoint checkpoints to reduce avoidable inconsistency
+- preserved explicit user-selected content profiles for PLC/SPLC, supplier email, PowerPoint, product catalog, robot program, and general plant content
+- extended document preview so every matched term exposes every available public-safe glossary column
+
+**Public validation**
+
+- six synthetic regression tests covering text-box extraction, whole-sentence reconstruction, list preservation, actor omission, negation/glossary coverage, and complete glossary-column visibility
+- syntax validation of the public-safe prototype and tests
+- no real terminology, production presentation, identity, infrastructure detail, or credential committed
+
+**Evidence boundary**
+
+- publicly demonstrated: architecture decision, implementation pattern, synthetic tests, learning record, and traceability design
+- privately retain when permitted: dated user-test notes, non-public test outputs, and operational change record
+- not yet claimed: measured production-quality gain, zero omission rate, deterministic LLM output, independent adoption, or safety validation
+
+**Public evidence**
+
+- [ADR-008: PowerPoint semantic units and quality gates](../architecture-decisions/ADR-008-powerpoint-semantic-units-and-quality-gates.md)
+- [August 10 engineering learning record](2026-08-10-powerpoint-semantic-quality-learning-record.md)
+- [Public-safe prototype and synthetic tests](../../projects/manufacturing-ai-translation-platform/apps/term1-glossary-controlled-translator/)
+
 ## Next Verifiable Milestones
 
 Future milestones should be added only after evidence exists:

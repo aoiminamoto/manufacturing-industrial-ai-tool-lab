@@ -24,6 +24,7 @@ Manufacturing translation often fails when generic language tools do not underst
   - PLC/SPLC comment standardization
   - Supplier email translation
   - Product catalog and specification translation
+  - PowerPoint presentation translation
   - Kawasaki robot `.as` / `.ad` file comments and labels
 - TXT, CSV, DOCX, PPTX, XLSX, XLSM, AS, and AD upload support
 - Large-file processing up to 100 MB
@@ -34,6 +35,18 @@ Manufacturing translation often fails when generic language tools do not underst
 - Local translation memory cache
 - Optional email notification or manual email draft support
 - Local app usage count in the sidebar
+- Complete-text-box PowerPoint translation regardless of internal line breaks
+- Semantic quality checks with corrective retry for high-confidence omissions
+- Dynamic preview of every matched glossary record and all available metadata columns
+- Zero-temperature generation and a pinned model snapshot to reduce avoidable output variation
+
+## PowerPoint Quality Design
+
+PowerPoint paragraphs are presentation objects, not guaranteed sentence boundaries. The prototype therefore extracts one translation block per text box, reads the full box before translation, writes continuous prose back as one result, and preserves separate items when the source is clearly a list.
+
+PowerPoint mode also validates selected actors, conditions, actions, negation, numbers, units, protected identifiers, required glossary terms, and list counts. A failed candidate is retried with explicit correction requirements. The gate is intentionally conservative and does not replace engineering review for production-critical content.
+
+The translation preview displays every matched term together with every column available in the corresponding glossary row. The app does not invent missing provenance.
 
 ## Public Repository Safety
 

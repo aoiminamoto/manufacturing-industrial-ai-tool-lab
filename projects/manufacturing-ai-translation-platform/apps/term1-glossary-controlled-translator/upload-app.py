@@ -52,7 +52,8 @@ DEFAULT_PLC_RULE_PATHS = [
     BASE_DIR / "plc_abbreviation_rules.xlsx",
     BASE_DIR / "plc_abbreviation_rules.csv",
 ]
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = "gpt-4.1-mini-2025-04-14"
+PPT_TEXTBOX_TRANSLATION_VERSION = "ppt-textbox-unit-v2"
 DOCUMENT_BATCH_SIZE = 25
 MAX_PARALLEL_BATCHES = 12
 MAX_TRANSLATION_RETRIES = 2
@@ -70,12 +71,14 @@ GENERAL_TRANSLATION_MODE = "General Plant Translation"
 PLC_TRANSLATION_MODE = "PLC/SPLC Comment Standardization"
 SUPPLIER_EMAIL_TRANSLATION_MODE = "Supplier Email Translation"
 PRODUCT_CATALOG_TRANSLATION_MODE = "Product Catalog Translation"
+POWERPOINT_TRANSLATION_MODE = "PowerPoint Presentation Style"
 ROBOT_PROGRAM_TRANSLATION_MODE = "Kawasaki Robot .as file"
 TRANSLATION_MODES = [
     PLC_TRANSLATION_MODE,
     GENERAL_TRANSLATION_MODE,
     SUPPLIER_EMAIL_TRANSLATION_MODE,
     PRODUCT_CATALOG_TRANSLATION_MODE,
+    POWERPOINT_TRANSLATION_MODE,
     ROBOT_PROGRAM_TRANSLATION_MODE,
 ]
 PLC_DUPLICATE_STATUS_WORDS = [
@@ -390,6 +393,8 @@ def document_fingerprint(file_name: str, raw: bytes) -> str:
 
 def checkpoint_path_for(file_name: str, raw: bytes, translation_mode: str = GENERAL_TRANSLATION_MODE) -> Path:
     mode_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", translation_mode).strip("_").lower()
+    if file_name.lower().endswith(".pptx"):
+        mode_key = f"{mode_key}_{PPT_TEXTBOX_TRANSLATION_VERSION}"
     return PROGRESS_DIR / f"{document_fingerprint(file_name, raw)}_{mode_key}.json"
 
 
@@ -491,8 +496,10 @@ def translation_pairs_preview(
     blocks: list[TextBlock],
     translations: dict[str, str],
     limit: int = 200,
+    glossary: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     rows = []
+    translated_pair_count = 0
     for block in blocks:
         if block.location not in translations or not should_translate(block.text):
             continue
@@ -500,14 +507,33 @@ def translation_pairs_preview(
         japanese = clean_text(block.text)
         if not english or english == japanese:
             continue
-        rows.append(
-            {
-                "Location": block.location.split(":", 1)[0],
-                "JP": japanese,
-                "EN": english,
-            }
-        )
-        if len(rows) >= limit:
+        base_row = {"Location": block.location, "JP": japanese, "EN": english}
+        trace_rows = []
+        if glossary is not None and not glossary.empty:
+            _, hits = apply_glossary_to_source(block.text, glossary, replace_source=False)
+            for hit in hits:
+                matched_records = glossary[
+                    (glossary["JP"].astype(str).map(clean_text) == hit.jp)
+                    & (glossary["EN"].astype(str).map(clean_text) == hit.en)
+                ]
+                for _, matched_record in matched_records.iterrows():
+                    trace_row = {
+                        "Glossary Match": f"{hit.jp} → {hit.en}",
+                        "Match Count": hit.count,
+                    }
+                    trace_row.update(
+                        {f"Glossary {column}": matched_record.get(column, "") for column in glossary.columns}
+                    )
+                    trace_rows.append(trace_row)
+        if trace_rows:
+            rows.extend({**base_row, **trace_row} for trace_row in trace_rows)
+        else:
+            empty_trace = {"Glossary Match": "", "Match Count": ""}
+            if glossary is not None:
+                empty_trace.update({f"Glossary {column}": "" for column in glossary.columns})
+            rows.append({**base_row, **empty_trace})
+        translated_pair_count += 1
+        if translated_pair_count >= limit:
             break
     return pd.DataFrame(rows)
 
@@ -517,11 +543,12 @@ def render_translation_pairs_preview(
     file_name: str,
     translation_mode: str,
     max_rows: int = 200,
+    glossary: pd.DataFrame | None = None,
 ) -> None:
     try:
         blocks = extract_text_blocks(raw_document, file_name)
         translations = load_checkpoint(checkpoint_path_for(file_name, raw_document, translation_mode))
-        preview = translation_pairs_preview(blocks, translations, max_rows)
+        preview = translation_pairs_preview(blocks, translations, max_rows, glossary)
     except Exception as exc:
         st.caption(f"JP/EN preview unavailable: {exc}")
         return
@@ -531,14 +558,19 @@ def render_translation_pairs_preview(
         return
 
     st.subheader("JP/EN Preview")
+    st.caption(
+        "Every matched controlled term is shown with all available source-glossary columns "
+        "for terminology provenance and governance review."
+    )
     st.dataframe(preview, use_container_width=True, hide_index=True)
     total_pairs = sum(
         1
         for block in blocks
         if block.location in translations and should_translate(block.text)
     )
-    if total_pairs > len(preview):
-        st.caption(f"Showing first {len(preview):,} of {total_pairs:,} translated JP/EN pairs.")
+    shown_pairs = min(total_pairs, max_rows)
+    if total_pairs > shown_pairs:
+        st.caption(f"Showing first {shown_pairs:,} of {total_pairs:,} translated JP/EN pairs.")
 
 
 def start_background_translation_job(
@@ -1229,7 +1261,6 @@ def normalize_glossary(df: pd.DataFrame) -> pd.DataFrame:
     if "JP" not in glossary.columns or "EN" not in glossary.columns:
         raise ValueError("Glossary must include JP/Japanese and EN/English columns.")
 
-    glossary = glossary[[column for column in ["JP", "EN", "Note", "Category", "Owner"] if column in glossary.columns]]
     glossary = glossary.copy()
     glossary["JP"] = glossary["JP"].astype(str).map(clean_text)
     glossary["EN"] = glossary["EN"].astype(str).map(clean_text)
@@ -1349,6 +1380,18 @@ Product catalog translation mode:
 5. Use natural product English, but do not add marketing claims, features, applications, or recommendations that are not in the source.
 6. If a glossary term has multiple English choices, choose one context-appropriate term. Never output multiple alternatives separated by commas or slashes.
 7. Prefer concise phrases such as "Application", "Features", "Technical Data", "Dimension Tolerance", "Surface Roughness", and "Case Study" when context fits.
+    """.strip()
+
+
+def powerpoint_mode_rules() -> str:
+    return """
+PowerPoint presentation translation mode:
+1. Treat all text inside one PowerPoint text box as one semantic unit, even when Enter or visual wrapping creates several lines.
+2. Read the complete text box before translating. Do not translate continuous prose line by line.
+3. Produce concise, slide-ready manufacturing English only after preserving the complete engineering meaning.
+4. Preserve distinct list items when the source is clearly a list.
+5. Before returning, verify every explicit actor, condition, action, object, negation, number, unit, protected code, and required glossary term.
+6. Never remove source meaning merely to shorten the slide text.
 """.strip()
 
 
@@ -1371,6 +1414,8 @@ def mode_rules_for(translation_mode: str) -> str:
         return supplier_email_mode_rules()
     if translation_mode == PRODUCT_CATALOG_TRANSLATION_MODE:
         return product_catalog_mode_rules()
+    if translation_mode == POWERPOINT_TRANSLATION_MODE:
+        return powerpoint_mode_rules()
     if translation_mode == ROBOT_PROGRAM_TRANSLATION_MODE:
         return robot_program_mode_rules()
     return general_mode_rules()
@@ -1419,6 +1464,59 @@ def restore_missing_enclosed_markers(source_text: str, translated_text: str) -> 
         else:
             restored = restored.rstrip() + marker
     return restored
+
+
+POWERPOINT_JP_EN_COVERAGE_RULES = [
+    ("actor: 作業者", ("作業者",), r"\b(operator|worker|personnel|technician)\b"),
+    ("condition: 場合", ("場合",), r"\b(if|when|whenever|in case)\b"),
+    ("condition: 前に", ("前に",), r"\b(before|prior to)\b"),
+    ("condition: 後", ("後",), r"\b(after|following|once|before)\b"),
+    ("condition: まで", ("まで",), r"\b(until|before|by the time|up to)\b"),
+    ("action: 確認", ("確認",), r"\b(confirm|check|verify|ensure)\w*\b"),
+    ("action: 起動/開始", ("起動", "開始"), r"\b(restart|start|startup|launch|activate)\w*\b"),
+    ("action: 停止", ("停止",), r"\b(stop|stoppage|halt|shutdown|shut down)\w*\b"),
+    ("action: 連絡", ("連絡",), r"\b(contact|notify|inform|report)\w*\b"),
+    ("action: 押す", ("押し", "押さ", "押す", "押された"), r"\b(press|pressed|push)\w*\b"),
+    ("action: 開く", ("開いて", "開く", "開け"), r"\b(open|opened|opening)\b"),
+    ("action: 閉じる", ("閉じ", "閉め"), r"\b(close|closed|closing|shut)\b"),
+    ("action: 翻訳", ("翻訳",), r"\b(translate|translated|translating|translation)\b"),
+]
+
+
+def powerpoint_translation_quality_issues(
+    source_text: str,
+    translated_text: str,
+    hits: list[TermHit] | None = None,
+) -> list[str]:
+    source = clean_text(source_text)
+    target = clean_text(translated_text)
+    issues = []
+
+    for label, source_markers, target_pattern in POWERPOINT_JP_EN_COVERAGE_RULES:
+        if any(marker in source for marker in source_markers) and not re.search(target_pattern, target, re.IGNORECASE):
+            issues.append(f"Missing {label}")
+    if re.search(r"(?:ない|ません|禁止|不可|無効)", source) and not re.search(
+        r"\b(no|not|never|without|prohibit|forbid|disable|disabled|invalid|unavailable|cannot|can't|do not|don't)\b",
+        target,
+        re.IGNORECASE,
+    ):
+        issues.append("Missing negation or prohibition")
+    for code in find_protected_codes(source_text):
+        if code not in translated_text:
+            issues.append(f"Missing protected code: {code}")
+    for number in re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?(?:%|℃|°C|mm|cm|m|kg|V|A|Hz|s|min)?", source):
+        if number and number not in target:
+            issues.append(f"Missing number or unit: {number}")
+    target_folded = target.casefold()
+    for hit in hits or []:
+        if hit.en and hit.en.casefold() not in target_folded:
+            issues.append(f"Missing required glossary term: {hit.jp} → {hit.en}")
+    source_lines = [line for line in str(source_text).splitlines() if line.strip()]
+    target_lines = [line for line in str(translated_text).splitlines() if line.strip()]
+    if len(source_lines) > 1 and all(line.lstrip().startswith(("・", "•", "-", "*")) for line in source_lines):
+        if len(target_lines) != len(source_lines):
+            issues.append("List item count changed")
+    return list(dict.fromkeys(issues))
 
 
 INSTRUCTION_LINE_PATTERNS = [
@@ -1631,7 +1729,7 @@ def translate_text(
     response = client.responses.create(
         model=openai_model(),
         input=build_prompt(source_text, hits, protected_codes, translation_mode, user_guidance),
-        temperature=0.1,
+        temperature=0,
         timeout=openai_timeout_seconds(),
     )
     return post_process_translation(response.output_text, translation_mode), response_token_usage(response)
@@ -1703,6 +1801,8 @@ Mandatory rules:
 [BLOCK 1]
 English translation
 [/BLOCK 1]
+8. For PowerPoint mode, each BLOCK is one complete text box. Read it as a whole semantic unit, regardless of internal line breaks.
+9. Concision never permits dropping an explicit actor, condition, action, object, negation, number, unit, code, or required glossary term.
 
 Company terminology detected:
 {unique_terms}
@@ -1726,6 +1826,46 @@ def parse_batch_translation(output_text: str, item_ids: list[int]) -> dict[int, 
         if match:
             translations[item_id] = match.group(1).strip()
     return translations
+
+
+def batch_powerpoint_quality_issues(
+    chunk: list[TextBlock],
+    items: list[tuple[int, str, list[TermHit], list[str]]],
+    parsed: dict[int, str],
+    translation_mode: str,
+) -> dict[int, list[str]]:
+    if translation_mode != POWERPOINT_TRANSLATION_MODE:
+        return {}
+    hits_by_id = {item_id: hits for item_id, _source, hits, _codes in items}
+    issues_by_id = {}
+    for item_id, _source, _hits, _codes in items:
+        if item_id not in parsed:
+            continue
+        issues = powerpoint_translation_quality_issues(
+            chunk[item_id - 1].text,
+            parsed[item_id],
+            hits_by_id.get(item_id, []),
+        )
+        if issues:
+            issues_by_id[item_id] = issues
+    return issues_by_id
+
+
+def translation_quality_retry_instructions(issues_by_id: dict[int, list[str]]) -> str:
+    details = "\n".join(
+        f"- BLOCK {item_id}: {'; '.join(issues)}"
+        for item_id, issues in issues_by_id.items()
+    )
+    return f"""
+
+QUALITY CORRECTION REQUIRED:
+The prior candidate failed semantic coverage checks:
+{details}
+
+Translate the affected BLOCKS again. Preserve every actor, condition, action, object, negation,
+number, unit, protected code, and required glossary term. Concise wording is allowed only after
+all source meaning is retained. Return the complete marked batch again.
+""".rstrip()
 
 
 def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, translation_mode: str) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
@@ -1755,6 +1895,7 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, transl
     last_error = None
     if items:
         machine_translations = None
+        quality_retry = ""
         try:
             machine_translations = machine_translate_texts([item[1] for item in items])
         except Exception as exc:
@@ -1765,14 +1906,19 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, transl
                 item[0]: post_process_translation(translated, translation_mode)
                 for item, translated in zip(items, machine_translations)
             }
-        else:
+            machine_quality_issues = batch_powerpoint_quality_issues(chunk, items, parsed, translation_mode)
+            if machine_quality_issues:
+                quality_retry = translation_quality_retry_instructions(machine_quality_issues)
+                parsed = {}
+                machine_translations = None
+        if machine_translations is None:
             client = openai_client()
             for attempt in range(1, MAX_TRANSLATION_RETRIES + 1):
                 try:
                     response = client.responses.create(
                         model=openai_model(),
-                        input=build_batch_prompt(items, translation_mode),
-                        temperature=0.1,
+                        input=build_batch_prompt(items, translation_mode) + quality_retry,
+                        temperature=0,
                         timeout=openai_timeout_seconds(),
                     )
                     token_usage.add(response_token_usage(response))
@@ -1780,6 +1926,18 @@ def translate_batch_chunk(chunk: list[TextBlock], glossary: pd.DataFrame, transl
                     missing_ids = [item[0] for item in items if item[0] not in parsed]
                     if missing_ids:
                         raise ValueError(f"Translation response missed block marker(s): {missing_ids}")
+                    quality_issues = batch_powerpoint_quality_issues(chunk, items, parsed, translation_mode)
+                    if quality_issues:
+                        quality_retry = translation_quality_retry_instructions(quality_issues)
+                        if attempt == MAX_TRANSLATION_RETRIES:
+                            raise ValueError(
+                                "PowerPoint semantic quality validation failed: "
+                                + " | ".join(
+                                    f"BLOCK {item_id}: {', '.join(issues)}"
+                                    for item_id, issues in quality_issues.items()
+                                )
+                            )
+                        continue
                     break
                 except Exception as exc:
                     last_error = exc
@@ -2247,6 +2405,28 @@ def extract_docx_blocks(raw: bytes) -> list[TextBlock]:
     return blocks
 
 
+def ppt_paragraph_text(paragraph: ET.Element) -> str:
+    parts = []
+    for child in list(paragraph):
+        if child.tag == f"{{{PPT_NS['a']}}}br":
+            parts.append("\n")
+            continue
+        parts.extend(node.text or "" for node in child.findall(".//a:t", PPT_NS))
+    return "".join(parts).strip()
+
+
+def ppt_text_bodies(root: ET.Element) -> list[ET.Element]:
+    return [element for element in root.iter() if element.tag.endswith("}txBody")]
+
+
+def ppt_text_body_text(text_body: ET.Element) -> str:
+    return "\n".join(
+        text
+        for text in (ppt_paragraph_text(paragraph) for paragraph in text_body.findall("a:p", PPT_NS))
+        if text
+    ).strip()
+
+
 def extract_pptx_blocks(raw: bytes) -> list[TextBlock]:
     blocks = []
     with ZipFile(io.BytesIO(raw)) as archive:
@@ -2256,10 +2436,10 @@ def extract_pptx_blocks(raw: bytes) -> list[TextBlock]:
         )
         for slide_name in slide_names:
             root = ET.fromstring(archive.read(slide_name))
-            for index, paragraph in enumerate(root.findall(".//a:p", PPT_NS)):
-                text = "".join(node.text or "" for node in paragraph.findall(".//a:t", PPT_NS)).strip()
+            for index, text_body in enumerate(ppt_text_bodies(root)):
+                text = ppt_text_body_text(text_body)
                 if text:
-                    blocks.append(TextBlock(location=f"{slide_name}#{index}", text=text))
+                    blocks.append(TextBlock(location=f"{slide_name}#textbox:{index}", text=text))
     return blocks
 
 
@@ -2415,6 +2595,65 @@ def build_translated_docx(
     return target.getvalue()
 
 
+def replace_text_in_ppt_paragraph(paragraph: ET.Element, translated_text: str) -> None:
+    runs = paragraph.findall("a:r", PPT_NS)
+    first_run = next((run for run in runs if run.find("a:t", PPT_NS) is not None), None)
+    if first_run is None:
+        return
+    first_text = first_run.find("a:t", PPT_NS)
+    if first_text is None:
+        return
+    lines = str(translated_text).splitlines() or [""]
+    first_text.text = clean_office_xml_text(lines[0])
+    for child in list(paragraph):
+        if child is first_run:
+            continue
+        if child.tag in {f"{{{PPT_NS['a']}}}r", f"{{{PPT_NS['a']}}}br", f"{{{PPT_NS['a']}}}fld"}:
+            paragraph.remove(child)
+    insertion_index = list(paragraph).index(first_run) + 1
+    for line in lines[1:]:
+        paragraph.insert(insertion_index, ET.Element(f"{{{PPT_NS['a']}}}br"))
+        insertion_index += 1
+        new_run = ET.Element(f"{{{PPT_NS['a']}}}r")
+        new_text = ET.SubElement(new_run, f"{{{PPT_NS['a']}}}t")
+        new_text.text = clean_office_xml_text(line)
+        paragraph.insert(insertion_index, new_run)
+        insertion_index += 1
+
+
+def ppt_paragraph_is_list_item(paragraph: ET.Element) -> bool:
+    text = ppt_paragraph_text(paragraph).lstrip()
+    if text.startswith(("・", "•", "-", "–", "—", "*")):
+        return True
+    paragraph_properties = paragraph.find("a:pPr", PPT_NS)
+    return bool(
+        paragraph_properties is not None
+        and any(child.tag.endswith(("}buChar", "}buAutoNum", "}buBlip")) for child in paragraph_properties)
+    )
+
+
+def replace_text_in_ppt_text_body(text_body: ET.Element, translated_text: str) -> None:
+    paragraphs = text_body.findall("a:p", PPT_NS)
+    populated = [paragraph for paragraph in paragraphs if ppt_paragraph_text(paragraph)]
+    if not populated:
+        return
+    translated_lines = [line.strip() for line in str(translated_text).splitlines() if line.strip()]
+    preserve_list = (
+        len(populated) > 1
+        and all(ppt_paragraph_is_list_item(paragraph) for paragraph in populated)
+        and len(translated_lines) == len(populated)
+    )
+    if preserve_list:
+        for paragraph, line in zip(populated, translated_lines):
+            replace_text_in_ppt_paragraph(paragraph, line)
+        return
+    first_paragraph = populated[0]
+    replace_text_in_ppt_paragraph(first_paragraph, translated_text)
+    for paragraph in paragraphs:
+        if paragraph is not first_paragraph:
+            text_body.remove(paragraph)
+
+
 def build_translated_pptx(raw: bytes, translations: dict[str, str]) -> bytes:
     source = io.BytesIO(raw)
     target = io.BytesIO()
@@ -2424,10 +2663,10 @@ def build_translated_pptx(raw: bytes, translations: dict[str, str]) -> bytes:
             data = input_zip.read(item.filename)
             if item.filename.startswith("ppt/slides/slide") and item.filename.endswith(".xml"):
                 root = ET.fromstring(data)
-                for index, paragraph in enumerate(root.findall(".//a:p", PPT_NS)):
-                    key = f"{item.filename}#{index}"
+                for index, text_body in enumerate(ppt_text_bodies(root)):
+                    key = f"{item.filename}#textbox:{index}"
                     if key in translations:
-                        replace_text_in_paragraph(paragraph, paragraph.findall(".//a:t", PPT_NS), translations[key])
+                        replace_text_in_ppt_text_body(text_body, translations[key])
                 data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
             output_zip.writestr(item, data)
 
@@ -3134,10 +3373,16 @@ def render_active_document_job(
         source_path_text = str(active_job.get("source_file_path") or "")
         source_path = Path(source_path_text) if source_path_text else None
         if source_path is not None and source_path.exists():
+            active_glossary = glossary_for_mode(
+                glossary,
+                plc_rules,
+                active_job["translation_mode"] or translation_mode,
+            )
             render_translation_pairs_preview(
                 source_path.read_bytes(),
                 active_job["file_name"],
                 active_job["translation_mode"] or translation_mode,
+                glossary=active_glossary,
             )
         if active_job["notify_email"]:
             st.link_button(
@@ -3498,7 +3743,12 @@ def render_document_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame)
             file_name=st.session_state["translated_document_name"],
             mime=st.session_state["translated_document_mime"],
         )
-        render_translation_pairs_preview(raw_document, uploaded_document.name, translation_mode)
+        render_translation_pairs_preview(
+            raw_document,
+            uploaded_document.name,
+            translation_mode,
+            glossary=glossary_for_mode(glossary, plc_rules, translation_mode),
+        )
 
 def main() -> None:
     load_env()
