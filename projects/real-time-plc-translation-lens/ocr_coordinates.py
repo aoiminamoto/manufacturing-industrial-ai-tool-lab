@@ -4,7 +4,7 @@ import re
 JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaffｦ-ﾟ]")
 
 
-def build_regions(texts, scores, boxes, width: int, height: int, minimum_confidence: float = 0.35) -> list[dict]:
+def build_regions(texts, scores, boxes, width: int, height: int, minimum_confidence: float = 0.55) -> list[dict]:
     """Convert OCR pixel boxes into validated, normalized Japanese regions."""
     if width <= 0 or height <= 0:
         raise ValueError("Image dimensions must be positive.")

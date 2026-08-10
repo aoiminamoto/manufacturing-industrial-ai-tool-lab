@@ -307,6 +307,7 @@ def translate_regions(regions: list[dict], pairs: tuple[tuple[str, str], ...]) -
             "id": region["id"],
             "source": protected,
             "required_glossary": list(mapping.values()),
+            "max_words": max(1, min(5, round((region["bbox"][2] - region["bbox"][0]) / 60))),
         })
 
     if items:
@@ -321,6 +322,7 @@ Rules:
 3. Use one concise PLC-comment translation, not an explanation.
 4. Required glossary wording is mandatory and must not be replaced by a synonym.
 5. Return every input id exactly once.
+6. Never exceed that item's max_words. Prefer standard short PLC labels; do not add articles or explanations merely to form a sentence.
 
 Return only JSON:
 {{"translations":[{{"id":1,"en":"English PLC comment"}}]}}
@@ -679,11 +681,11 @@ function videoRect() {
 function drawRichLine(ctx, text, terms, x, y, maxWidth, maxHeight) {
   const compact=String(text || '').replace(/\s+/g,' ').trim();
   const estimatedByWidth=maxWidth/Math.max(4,compact.length*.56);
-  const fontSize=Math.max(7,Math.min(17,Math.floor(Math.min(maxHeight*.72,estimatedByWidth*1.45))));
+  const fontSize=Math.max(6,Math.min(17,Math.floor(Math.min(maxHeight*.72,estimatedByWidth*1.45))));
   ctx.font = `700 ${fontSize}px Arial`;
   const controlled = (terms || []).map(t => t.toLowerCase());
   const words = String(text || '').split(/(\s+)/).filter(Boolean);
-  let cx=x+3, cy=y+fontSize+2;
+  let cx=x+3, cy=y+fontSize+2, lineNumber=1;
   const lineHeight=fontSize*1.08;
   ctx.save();
   ctx.beginPath();
@@ -691,7 +693,7 @@ function drawRichLine(ctx, text, terms, x, y, maxWidth, maxHeight) {
   ctx.clip();
   words.forEach(word => {
     const width=ctx.measureText(word).width;
-    if (cx+width > x+maxWidth-3 && cx>x+3) { cx=x+3; cy+=lineHeight; }
+    if (cx+width > x+maxWidth-3 && cx>x+3 && lineNumber < 2) { cx=x+3; cy+=lineHeight; lineNumber+=1; }
     if (cy > y+maxHeight-1) return;
     const lower=word.trim().toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g,'');
     const isControlled=controlled.some(term => term.includes(lower) && lower.length>0);
@@ -709,18 +711,26 @@ function drawOverlay(rows) {
   const ctx=overlay.getContext('2d');
   ctx.clearRect(0,0,overlay.width,overlay.height);
   const vr=videoRect();
-  (rows || []).forEach(row => {
+  const candidates=(rows || []).map(row => {
     const [l,t,r,b]=row.bbox;
     const rawX=vr.x+vr.w*l/1000, rawY=vr.y+vr.h*t/1000;
     const rawW=vr.w*(r-l)/1000, rawH=vr.h*(b-t)/1000;
     const x=Math.max(vr.x,rawX), y=Math.max(vr.y,rawY);
-    const jpLength=Math.max(1,String(row.jp || '').length);
-    const enLength=Math.max(1,String(row.en || '').length);
-    // Keep each replacement near its source comment. Long English text wraps
-    // instead of expanding across neighboring PLC labels.
-    const widthFactor=Math.max(1,Math.min(1.5,enLength/jpLength));
-    const w=Math.min(vr.x+vr.w-x,Math.max(18,rawW*widthFactor));
+    const w=Math.min(vr.x+vr.w-x,Math.max(18,rawW));
     const h=Math.min(vr.y+vr.h-y,Math.max(14,rawH));
+    return {row,x,y,w,h,confidence:Number(row.confidence || 0)};
+  }).sort((a,b)=>b.confidence-a.confidence);
+  const accepted=[];
+  candidates.forEach(candidate => {
+    const collides=accepted.some(existing => {
+      const overlapW=Math.max(0,Math.min(candidate.x+candidate.w,existing.x+existing.w)-Math.max(candidate.x,existing.x));
+      const overlapH=Math.max(0,Math.min(candidate.y+candidate.h,existing.y+existing.h)-Math.max(candidate.y,existing.y));
+      const smallerArea=Math.max(1,Math.min(candidate.w*candidate.h,existing.w*existing.h));
+      return overlapW*overlapH/smallerArea > .35;
+    });
+    if (!collides) accepted.push(candidate);
+  });
+  accepted.sort((a,b)=>a.y-b.y || a.x-b.x).forEach(({row,x,y,w,h}) => {
     ctx.fillStyle='#fff';
     ctx.fillRect(x,y,w,h);
     drawRichLine(ctx,row.en,row.controlled_terms,x,y,w,h);
