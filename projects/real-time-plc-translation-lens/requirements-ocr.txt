@@ -1,0 +1,5 @@
+# Isolated local OCR runtime. Keep separate from requirements.txt.
+paddlepaddle==3.2.0
+paddleocr==3.7.0
+numpy==2.3.5
+Pillow>=11,<13

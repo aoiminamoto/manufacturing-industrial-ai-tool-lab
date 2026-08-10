@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 *.log
 .venv/
+.ocr-venv/
+models/
+*.tar
+ocr-output/

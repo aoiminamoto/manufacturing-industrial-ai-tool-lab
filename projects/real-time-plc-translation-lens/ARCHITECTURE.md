@@ -14,10 +14,10 @@ flowchart TD
     B --> C["Starlette /api/scan"]
     C --> D["Image normalization and bounded resize"]
     D --> E{"Scan mode"}
-    E -->|"ACCURATE (default)"| F["High-detail vision OCR"]
+    E -->|"ACCURATE (default)"| F["Local PaddleOCR sidecar"]
     E -->|"FAST"| G["Lower-detail vision OCR"]
-    F --> H["Japanese text + draft English + normalized bbox"]
-    G --> H
+    F --> H["Japanese text + pixel-derived bbox"]
+    G --> H["Japanese text + approximate bbox"]
     H --> I["Longest-first JP glossary matching"]
     I --> J{"Controlled term involved?"}
     J -->|"No"| K["Reuse contextual vision draft"]
@@ -38,7 +38,8 @@ flowchart TD
 | --- | --- |
 | Browser camera UI | Full-screen capture, mode selection, progress, frozen-frame overlay |
 | Starlette API | Request validation, bounded concurrency, timeout, result cache |
-| Vision OCR | Japanese detection, contextual draft translation, normalized bounding boxes |
+| Local OCR sidecar | Japanese detection and pixel-derived bounding boxes on `127.0.0.1:8506` |
+| Vision OCR | Fast-mode Japanese detection, draft translation, and approximate boxes |
 | Glossary loader | Cached CSV/XLSX loading with `JP` and `EN` column validation |
 | Terminology matcher | Longest-first source matching to protect specific phrases before short terms |
 | Context translator | OpenAI translation for sentences containing controlled terminology |
@@ -59,10 +60,11 @@ flowchart TD
 
 ## Accuracy and performance modes
 
-- **ACCURATE** is the default. It uses a 1280-pixel bounded frame and high-detail
-  vision processing for small PLC text and more reliable placement.
+- **ACCURATE** is the default. It uses PaddleOCR in an isolated local process to
+  return recognition boxes derived from image pixels. The frame is not sent to
+  OpenAI; extracted text is sent for glossary-controlled translation.
 - **FAST** uses a 1024-pixel bounded frame and lower-detail vision processing for
-  large, clear text.
+  large, clear text. Its boxes remain approximate.
 - The selected mode is saved in browser local storage.
 - Results are cached in memory by image content and scan mode.
 - The API bounds concurrent scans and returns a controlled timeout instead of
@@ -71,6 +73,9 @@ flowchart TD
 ## Data and security boundaries
 
 - Camera frames are processed in memory and are not intentionally persisted.
+- The OCR sidecar binds only to `127.0.0.1`; it is not exposed by the mobile ingress.
+- Accurate mode sends extracted text, not the camera frame, to OpenAI.
+- Fast mode sends the frame to the configured vision service.
 - API keys belong in `.env`, which is excluded from source control.
 - The repository includes only a synthetic glossary sample.
 - Mobile camera access requires a trusted HTTPS origin.
@@ -81,8 +86,10 @@ flowchart TD
 
 ## Known limitations
 
-- General-purpose vision bounding boxes are less geometrically precise than a
-  dedicated OCR engine.
+- Local OCR boxes improve geometric reproducibility but do not guarantee correct
+  recognition, translation, or complete coverage of small/glared text.
+- Fast-mode general-purpose vision boxes are approximate and must not be treated
+  as deterministic pixel coordinates.
 - Glare, moiré, camera angle, small fonts, and dense ladder logic can reduce OCR
   accuracy.
 - Accurate mode can take longer because it uses high-detail image processing and

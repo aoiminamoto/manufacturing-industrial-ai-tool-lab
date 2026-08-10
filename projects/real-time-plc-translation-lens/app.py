@@ -34,6 +34,7 @@ load_dotenv(BASE_DIR / ".env", override=False)
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 MAX_FRAME_BYTES = 12 * 1024 * 1024
 MAX_IMAGE_EDGE = 1280
+LOCAL_OCR_URL = os.getenv("PLC_LENS_LOCAL_OCR_URL", "http://127.0.0.1:8506/ocr")
 JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaffｦ-ﾟ]")
 SCAN_SEMAPHORE = asyncio.Semaphore(2)
 RESULT_CACHE: OrderedDict[str, dict] = OrderedDict()
@@ -212,6 +213,22 @@ Rules:
     return sorted(regions, key=lambda item: (item["bbox"][1], item["bbox"][0]))
 
 
+def extract_local_ocr_regions(raw: bytes) -> list[dict]:
+    """Get Japanese text and pixel-derived boxes from the localhost OCR sidecar."""
+    response = httpx.post(
+        LOCAL_OCR_URL,
+        content=raw,
+        headers={"Content-Type": "image/jpeg"},
+        timeout=120.0,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    regions = payload.get("regions", [])
+    if not isinstance(regions, list):
+        raise RuntimeError("Local OCR returned an invalid regions payload.")
+    return regions
+
+
 def glossary_matches(text: str, pairs: tuple[tuple[str, str], ...]) -> list[dict]:
     occupied = [False] * len(text)
     matches: list[dict] = []
@@ -290,6 +307,7 @@ def translate_regions(regions: list[dict], pairs: tuple[tuple[str, str], ...]) -
             "id": region["id"],
             "source": protected,
             "required_glossary": list(mapping.values()),
+            "max_words": max(1, min(5, round((region["bbox"][2] - region["bbox"][0]) / 60))),
         })
 
     if items:
@@ -304,6 +322,7 @@ Rules:
 3. Use one concise PLC-comment translation, not an explanation.
 4. Required glossary wording is mandatory and must not be replaced by a synonym.
 5. Return every input id exactly once.
+6. Never exceed that item's max_words. Prefer standard short PLC labels; do not add articles or explanations merely to form a sentence.
 
 Return only JSON:
 {{"translations":[{{"id":1,"en":"English PLC comment"}}]}}
@@ -347,18 +366,29 @@ def process_frame(raw: bytes, scan_mode: str = "accurate") -> dict:
     print(f"[PLC Lens] Preparing camera frame ({len(raw):,} bytes)...", flush=True)
     prepared, width, height = prepare_frame(raw)
     image_detail = "low" if scan_mode == "fast" else "high"
-    print(
-        f"[PLC Lens] Running {scan_mode.upper()} Japanese OCR at "
-        f"{width} x {height} ({image_detail} detail)...",
-        flush=True,
-    )
-    regions = extract_japanese_regions(prepared, width, height, image_detail)
+    if scan_mode == "accurate":
+        print(
+            f"[PLC Lens] Running LOCAL Japanese OCR at {width} x {height} "
+            "with pixel coordinates...",
+            flush=True,
+        )
+        regions = extract_local_ocr_regions(prepared)
+        ocr_engine = "local-paddleocr-pixel"
+    else:
+        print(
+            f"[PLC Lens] Running FAST Japanese Vision OCR at "
+            f"{width} x {height} ({image_detail} detail)...",
+            flush=True,
+        )
+        regions = extract_japanese_regions(prepared, width, height, image_detail)
+        ocr_engine = "openai-vision-approximate"
     print(f"[PLC Lens] OCR detected {len(regions)} Japanese region(s).", flush=True)
     if not regions:
         return {
             "regions": [],
             "message": "No readable Japanese PLC comments were detected. Move closer and scan again.",
             "scan_mode": scan_mode,
+            "ocr_engine": ocr_engine,
             "glossary_terms": len(glossary_pairs()),
         }
     pairs = glossary_pairs()
@@ -378,13 +408,21 @@ def process_frame(raw: bytes, scan_mode: str = "accurate") -> dict:
         "regions": results,
         "message": "Scan complete.",
         "scan_mode": scan_mode,
+        "ocr_engine": ocr_engine,
         "glossary_terms": len(glossary_pairs()),
         "controlled_matches": controlled_count,
     }
 
 
 async def homepage(_request: Request) -> HTMLResponse:
-    return HTMLResponse(INDEX_HTML)
+    return HTMLResponse(
+        INDEX_HTML,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 async def health(_request: Request) -> JSONResponse:
@@ -643,11 +681,11 @@ function videoRect() {
 function drawRichLine(ctx, text, terms, x, y, maxWidth, maxHeight) {
   const compact=String(text || '').replace(/\s+/g,' ').trim();
   const estimatedByWidth=maxWidth/Math.max(4,compact.length*.56);
-  const fontSize=Math.max(7,Math.min(17,Math.floor(Math.min(maxHeight*.72,estimatedByWidth*1.45))));
+  const fontSize=Math.max(6,Math.min(17,Math.floor(Math.min(maxHeight*.72,estimatedByWidth*1.45))));
   ctx.font = `700 ${fontSize}px Arial`;
   const controlled = (terms || []).map(t => t.toLowerCase());
   const words = String(text || '').split(/(\s+)/).filter(Boolean);
-  let cx=x+3, cy=y+fontSize+2;
+  let cx=x+3, cy=y+fontSize+2, lineNumber=1;
   const lineHeight=fontSize*1.08;
   ctx.save();
   ctx.beginPath();
@@ -655,7 +693,7 @@ function drawRichLine(ctx, text, terms, x, y, maxWidth, maxHeight) {
   ctx.clip();
   words.forEach(word => {
     const width=ctx.measureText(word).width;
-    if (cx+width > x+maxWidth-3 && cx>x+3) { cx=x+3; cy+=lineHeight; }
+    if (cx+width > x+maxWidth-3 && cx>x+3 && lineNumber < 2) { cx=x+3; cy+=lineHeight; lineNumber+=1; }
     if (cy > y+maxHeight-1) return;
     const lower=word.trim().toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g,'');
     const isControlled=controlled.some(term => term.includes(lower) && lower.length>0);
@@ -673,16 +711,26 @@ function drawOverlay(rows) {
   const ctx=overlay.getContext('2d');
   ctx.clearRect(0,0,overlay.width,overlay.height);
   const vr=videoRect();
-  (rows || []).forEach(row => {
+  const candidates=(rows || []).map(row => {
     const [l,t,r,b]=row.bbox;
     const rawX=vr.x+vr.w*l/1000, rawY=vr.y+vr.h*t/1000;
     const rawW=vr.w*(r-l)/1000, rawH=vr.h*(b-t)/1000;
     const x=Math.max(vr.x,rawX), y=Math.max(vr.y,rawY);
-    const jpLength=Math.max(1,String(row.jp || '').length);
-    const enLength=Math.max(1,String(row.en || '').length);
-    const widthFactor=Math.max(1,Math.min(3,enLength/jpLength));
-    const w=Math.min(vr.x+vr.w-x,Math.max(18,rawW*widthFactor));
+    const w=Math.min(vr.x+vr.w-x,Math.max(18,rawW));
     const h=Math.min(vr.y+vr.h-y,Math.max(14,rawH));
+    return {row,x,y,w,h,confidence:Number(row.confidence || 0)};
+  }).sort((a,b)=>b.confidence-a.confidence);
+  const accepted=[];
+  candidates.forEach(candidate => {
+    const collides=accepted.some(existing => {
+      const overlapW=Math.max(0,Math.min(candidate.x+candidate.w,existing.x+existing.w)-Math.max(candidate.x,existing.x));
+      const overlapH=Math.max(0,Math.min(candidate.y+candidate.h,existing.y+existing.h)-Math.max(candidate.y,existing.y));
+      const smallerArea=Math.max(1,Math.min(candidate.w*candidate.h,existing.w*existing.h));
+      return overlapW*overlapH/smallerArea > .35;
+    });
+    if (!collides) accepted.push(candidate);
+  });
+  accepted.sort((a,b)=>a.y-b.y || a.x-b.x).forEach(({row,x,y,w,h}) => {
     ctx.fillStyle='#fff';
     ctx.fillRect(x,y,w,h);
     drawRichLine(ctx,row.en,row.controlled_terms,x,y,w,h);
