@@ -37,6 +37,17 @@ decision is recorded in [ADR-001](docs/ADR-001-local-pixel-ocr-localization.md).
 
 ## Run Locally
 
+For repeatable Windows field testing, start both local services from this
+version-controlled directory:
+
+```powershell
+.\start-local-stack.ps1
+```
+
+The command reuses healthy services, starts missing services, waits for both
+health checks, and writes diagnostic output under `.runtime/`. This prevents a
+stale port listener from being mistaken for a healthy OCR or Lens process.
+
 Requirements: 64-bit Python 3.11+ and an OpenAI API key. Accurate mode uses a
 second, isolated Python environment so PaddleOCR cannot change the web app's dependencies.
 
