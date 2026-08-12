@@ -114,8 +114,13 @@ def openai_client() -> OpenAI:
     verify_value = verify
     if verify and truststore is not None:
         verify_value = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    http_client = httpx.Client(
+    transport = httpx.HTTPTransport(
         verify=verify_value,
+        local_address="0.0.0.0",
+        retries=1,
+    )
+    http_client = httpx.Client(
+        transport=transport,
         timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "90")),
         trust_env=True,
     )
@@ -415,6 +420,8 @@ def process_frame(raw: bytes, scan_mode: str = "accurate") -> dict:
 
 
 async def homepage(_request: Request) -> HTMLResponse:
+    # Field-test builds change frequently. Do not let mobile Safari continue
+    # running an older capture or overlay implementation after an update.
     return HTMLResponse(
         INDEX_HTML,
         headers={
@@ -751,7 +758,9 @@ async function processScanBlob(blob) {
     else if (seconds < 25) status(`Reading Japanese PLC comments… ${seconds}s`);
     else status(`Translating and checking glossary… ${seconds}s`);
   },1000);
+  let failureStage='preparing scan';
   try {
+    failureStage='freezing captured frame';
     if (frozenUrl) URL.revokeObjectURL(frozenUrl);
     frozenUrl=URL.createObjectURL(blob);
     freeze.src=frozenUrl;
@@ -762,11 +771,17 @@ async function processScanBlob(blob) {
     const timeoutId=setTimeout(()=>controller.abort(),80000);
     let response;
     try {
-      response=await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'image/jpeg','X-Scan-Mode':scanMode},body:blob,signal:controller.signal});
+      failureStage='uploading image';
+      const scanUrl=window.location.origin + '/api/scan';
+      response=await fetch(scanUrl,{method:'POST',headers:{'Content-Type':'image/jpeg','X-Scan-Mode':scanMode},body:blob,signal:controller.signal});
     } finally {
       clearTimeout(timeoutId);
     }
-    const data=await response.json();
+    failureStage='reading server response';
+    const responseText=await response.text();
+    let data;
+    try { data=JSON.parse(responseText); }
+    catch (_) { throw new Error(`Server returned an unreadable response (${response.status}).`); }
     if (!response.ok) throw new Error(data.error || 'Scan failed.');
     latestRegions=data.regions || [];
     const seconds=Math.max(1,Math.round((Date.now()-scanStartedAt)/1000));
@@ -777,7 +792,7 @@ async function processScanBlob(blob) {
     nextBtn.disabled=false;
   } catch(err) {
     status('Scan failed');
-    const message=err.name==='AbortError' ? 'Scan timed out. Move closer so the Japanese text fills more of the screen, then try again.' : (err.message || String(err));
+    const message=err.name==='AbortError' ? 'Scan timed out. Move closer so the Japanese text fills more of the screen, then try again.' : `${failureStage}: ${err.message || String(err)}`;
     results.innerHTML=`<div class="empty">${escapeHtml(message)}</div>`;
     nextBtn.disabled=false;
   } finally {
