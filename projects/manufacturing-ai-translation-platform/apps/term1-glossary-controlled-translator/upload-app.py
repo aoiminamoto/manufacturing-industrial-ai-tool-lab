@@ -5169,6 +5169,100 @@ Rules:
     return regions, response_token_usage(response)
 
 
+def extract_full_image_text_regions_with_vision(
+    raw: bytes,
+    file_name: str,
+    image_width: int,
+    image_height: int,
+    image_mode: str = IMAGE_MODE_HMI,
+    translation_direction: str = TRANSLATION_DIRECTION_JP_EN,
+) -> tuple[list[HmiTextRegion], TokenUsage]:
+    """Read the untouched full image first, preserving whole-screen context."""
+    encoded = base64.b64encode(raw).decode("ascii")
+    source_language, _target_language = direction_language_names(translation_direction)
+    prompt = f"""
+You are performing conservative industrial OCR on one complete, untouched image.
+
+Image type: {image_mode}
+Original image size: {image_width} x {image_height} pixels
+Source language: {source_language}
+
+First understand the complete visual layout and relationships among titles, tables, buttons, callouts, labels, and nearby values. Then return only source-language text that is directly and clearly visible.
+
+Return only valid JSON:
+{{
+  "regions": [
+    {{
+      "text": "exact visible source text",
+      "x": 0,
+      "y": 0,
+      "width": 100,
+      "height": 30,
+      "confidence": 0.98,
+      "kind": "parameter_label",
+      "visible_context": "brief context supported by nearby visible pixels"
+    }}
+  ]
+}}
+
+Production truth rules:
+1. Read the full original image holistically, but never use context to invent, repair, autocomplete, or infer characters.
+2. Return text exactly as visible. Do not translate it in this step.
+3. Omit any region when a character is clipped, blurred, too small, obstructed, or ambiguous.
+4. Every returned character must have direct pixel evidence. Familiar HMI wording and engineering conventions are not evidence.
+5. Return coordinates in the original {image_width} x {image_height} coordinate system, origin at top-left.
+6. Use the full logical text area or containing button/cell as the bounding box. Do not merge neighboring labels.
+7. Return only {source_language}; exclude pure numbers, dates, times, units, and text only in the other language.
+8. Confidence must reflect visual certainty. Use 0.80 or above only when every character is clearly readable.
+9. Set kind to one of: screen_title, top_button, navigation_button, action_button, parameter_label, alarm_label, status_label, value_field, unit_label, table_header, other.
+10. visible_context may include only nearby information that is itself clearly visible; otherwise return an empty string.
+""".strip()
+    response = openai_client().responses.create(
+        model=openai_model(),
+        input=[{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": prompt},
+                {
+                    "type": "input_image",
+                    "image_url": f"data:{image_mime_type(file_name)};base64,{encoded}",
+                    "detail": "high",
+                },
+            ],
+        }],
+        temperature=0,
+        timeout=openai_timeout_seconds(),
+    )
+    payload = extract_json_payload(response.output_text)
+    regions: list[HmiTextRegion] = []
+    for index, item in enumerate(payload.get("regions", []), start=1):
+        source_text = clean_text(item.get("text", ""))
+        if not source_text or not should_translate(source_text, translation_direction):
+            continue
+        try:
+            confidence = max(0.0, min(float(item.get("confidence", 0.0)), 1.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < HMI_MIN_OCR_CONFIDENCE:
+            continue
+        x = clamp_region(item.get("x", 0), 0, image_width - 1)
+        y = clamp_region(item.get("y", 0), 0, image_height - 1)
+        width = clamp_region(item.get("width", 1), 1, image_width - x)
+        height = clamp_region(item.get("height", 1), 1, image_height - y)
+        regions.append(HmiTextRegion(
+            location=f"full_image:{index}",
+            jp=source_text,
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            confidence=confidence,
+            note=clean_text(item.get("visible_context", "")),
+            kind=clean_text(item.get("kind", "")),
+        ))
+    return order_hmi_regions_row_major(regions), response_token_usage(response)
+
+
 def hmi_detection_crops(raw: bytes, image_mode: str = IMAGE_MODE_HMI) -> list[tuple[str, int, int, bytes]]:
     image = Image.open(io.BytesIO(raw)).convert("RGB")
     width, height = image.size
@@ -5689,6 +5783,28 @@ def extract_hmi_text_regions_with_vision(
     translation_direction: str = TRANSLATION_DIRECTION_JP_EN,
     progress_callback=None,
 ) -> tuple[list[HmiTextRegion], TokenUsage]:
+    holistic_regions: list[HmiTextRegion] = []
+    holistic_usage = TokenUsage()
+    for attempt in range(1, MAX_TRANSLATION_RETRIES + 1):
+        try:
+            if progress_callback is not None:
+                progress_callback("full_image", 1, 1)
+            holistic_regions, holistic_usage = extract_full_image_text_regions_with_vision(
+                raw,
+                file_name,
+                image_width,
+                image_height,
+                image_mode,
+                translation_direction,
+            )
+            break
+        except Exception:
+            if attempt == MAX_TRANSLATION_RETRIES:
+                holistic_regions = []
+                holistic_usage = TokenUsage()
+                break
+            time.sleep(2 * attempt)
+
     box_regions: list[HmiTextRegion] = []
     box_usage = TokenUsage()
     if image_mode == IMAGE_MODE_HMI:
@@ -5706,12 +5822,15 @@ def extract_hmi_text_regions_with_vision(
                 box_regions = []
                 box_usage = TokenUsage()
 
-    all_regions: list[HmiTextRegion] = []
+    all_regions: list[HmiTextRegion] = list(holistic_regions)
     total_usage = TokenUsage()
+    total_usage.add(holistic_usage)
     total_usage.add(box_usage)
     all_regions.extend(box_regions)
     crop_errors: list[Exception] = []
     detection_crops = hmi_detection_crops(raw, image_mode)
+    if image_mode != IMAGE_MODE_HMI:
+        detection_crops = [crop for crop in detection_crops if crop[0] != "full_image"]
     if image_mode == IMAGE_MODE_HMI and box_regions:
         # Box extraction already covers the main table. Scan only the areas most
         # likely to contain labels that do not have a complete rectangular border.
@@ -5948,20 +6067,22 @@ Protected codes detected:
 {unique_codes}
 
 Critical engineering-image translation rules:
-1. Translate each block using the screen context, position, and nearby context. Do not translate each item as an isolated dictionary word.
-2. Preserve the exact meaning first. Keep output concise only after the meaning is correct.
-3. Use concise {target_language} HMI/operator wording for buttons, screen names, alarm labels, settings, or parameters.
-4. Do not invent status, cause, action, or equipment details not visible in the source.
-5. Do not copy {source_language} prose into the {target_language} output unless it is a proper name, code, model, or unavoidable label.
-6. Preserve numbers, units, PLC/HMI codes, arrows, punctuation, and separators when they are part of the source text.
-7. Use consistent {target_language} for repeated source labels across the same image.
-8. If a block is a navigation or action button, use short standard UI wording in {target_language} when accurate.
-9. Required controlled terminology is mandatory. When a block lists a required term, use its target wording exactly; do not replace it with a synonym or paraphrase.
-10. Return each translated block using the same markers and do not add explanations:
+1. The complete original image may be attached. Use its whole-screen visual layout and relationships to understand meaning, just as when a user uploads an image directly for translation.
+2. Translate each verified source block using the full-image context, position, and nearby context. Do not translate each item as an isolated dictionary word.
+3. The verified source block text is authoritative. Never add text from the image that is not present in that block.
+4. Preserve the exact meaning first. Keep output concise only after the meaning is correct.
+5. Use concise {target_language} HMI/operator wording for buttons, screen names, alarm labels, settings, or parameters.
+6. Do not invent status, cause, action, or equipment details not visible in the source.
+7. Do not copy {source_language} prose into the {target_language} output unless it is a proper name, code, model, or unavoidable label.
+8. Preserve numbers, units, PLC/HMI codes, arrows, punctuation, and separators when they are part of the source text.
+9. Use consistent {target_language} for repeated source labels across the same image.
+10. If a block is a navigation or action button, use short standard UI wording in {target_language} when accurate.
+11. Required controlled terminology is mandatory. When a block lists a required term, use its target wording exactly; do not replace it with a synonym or paraphrase.
+12. Return each translated block using the same markers and do not add explanations:
 [BLOCK 1]
 {target_language} translation
 [/BLOCK 1]
-11. Preserve text already written in {target_language}; translate only the {source_language} content.
+13. Preserve text already written in {target_language}; translate only the {source_language} content.
 
 Source blocks:
 {item_text}
@@ -6048,6 +6169,8 @@ def translate_hmi_regions(
     glossary: pd.DataFrame,
     image_mode: str = IMAGE_MODE_HMI,
     translation_direction: str = TRANSLATION_DIRECTION_JP_EN,
+    raw_image: bytes | None = None,
+    file_name: str = "image.png",
 ) -> tuple[dict[str, str], list[TermHit], TokenUsage]:
     if not regions:
         return {}, [], TokenUsage()
@@ -6103,14 +6226,29 @@ def translate_hmi_regions(
         parsed: dict[int, str] = {}
         for attempt in range(1, MAX_TRANSLATION_RETRIES + 1):
             try:
+                translation_prompt = build_hmi_translation_prompt(
+                    items,
+                    context,
+                    image_mode,
+                    translation_direction,
+                )
+                response_input = translation_prompt
+                if raw_image:
+                    encoded_image = base64.b64encode(raw_image).decode("ascii")
+                    response_input = [{
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": translation_prompt},
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:{image_mime_type(file_name)};base64,{encoded_image}",
+                                "detail": "high",
+                            },
+                        ],
+                    }]
                 response = client.responses.create(
                     model=openai_model(),
-                    input=build_hmi_translation_prompt(
-                        items,
-                        context,
-                        image_mode,
-                        translation_direction,
-                    ),
+                    input=response_input,
                     temperature=0,
                     timeout=openai_timeout_seconds(),
                 )
@@ -7232,7 +7370,10 @@ def render_hmi_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> N
 
             def update_image_detection_progress(stage: str, current: int, total: int) -> None:
                 ratio = min(max(current / max(total, 1), 0.0), 1.0)
-                if stage == "boxes":
+                if stage == "full_image":
+                    status.write("Understanding the complete original image with OpenAI Vision...")
+                    progress.progress(0.18)
+                elif stage == "boxes":
                     status.write(
                         f"Reading HMI boxes with OpenAI Vision: batch {current}/{total}..."
                     )
@@ -7288,6 +7429,8 @@ def render_hmi_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> N
                 active_glossary,
                 image_mode,
                 translation_direction,
+                raw_image,
+                uploaded_image.name,
             )
             regions = enrich_hmi_region_kinds(regions, translations, image.height, image.width)
             clean_regions = deduplicate_hmi_regions_for_output(regions, translations)
