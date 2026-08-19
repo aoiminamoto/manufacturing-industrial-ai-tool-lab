@@ -93,6 +93,9 @@ PDF_EXTRACTION_VERSION = "pdf-visual-line-unit-v1"
 OPENAI_TIMEOUT_SECONDS = 60
 HMI_MAX_VISION_BOXES = 80
 HMI_BOX_VISION_BATCH_SIZE = 20
+HMI_MIN_OCR_CONFIDENCE = 0.80
+HMI_MIN_VERIFICATION_CONFIDENCE = 0.90
+HMI_VERIFICATION_BATCH_SIZE = 12
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024
 TRANSLATION_USAGE_SINCE_LABEL = "Jul 17, 2026"
@@ -5108,11 +5111,12 @@ Rules:
 13. Pay special attention to small colored top-row buttons, right-side buttons, and bottom navigation buttons. Do not miss short labels in the selected source language.
 14. Do not infer repeated labels from table structure. Return only {source_language} text you can see, at the location where it is actually visible.
 15. Include confidence from 0 to 1.
-16. If text is uncertain, include it with lower confidence and explain briefly in note.
-17. The note field should preserve nearby engineering context when visible, such as units (mm, mm/s, msec), axis names, parameter values, or button identifiers. Keep this concise.
-18. Set kind to one of: screen_title, top_button, navigation_button, action_button, parameter_label, alarm_label, status_label, value_field, unit_label, table_header, other.
-19. For HMI review quality, classify bottom menu items and right-side buttons as navigation_button or action_button; classify the large centered title as screen_title; classify left/right table label cells as parameter_label; classify pure value/unit cells as value_field or unit_label.
-20. {mode_note}
+16. Never guess, infer, autocomplete, or reconstruct uncertain text. If every character is not clearly visible, omit that region completely.
+17. Common HMI labels, engineering conventions, nearby text, and prior expectations are not visual evidence.
+18. The note field should preserve nearby engineering context only when visibly readable, such as units, axis names, parameter values, or button identifiers.
+19. Set kind to one of: screen_title, top_button, navigation_button, action_button, parameter_label, alarm_label, status_label, value_field, unit_label, table_header, other.
+20. For HMI review quality, classify bottom menu items and right-side buttons as navigation_button or action_button; classify the large centered title as screen_title; classify left/right table label cells as parameter_label; classify pure value/unit cells as value_field or unit_label.
+21. {mode_note}
 """.strip()
     response = openai_client().responses.create(
         model=openai_model(),
@@ -5145,6 +5149,8 @@ Rules:
             confidence = max(0.0, min(float(item.get("confidence", 0.0)), 1.0))
         except (TypeError, ValueError):
             confidence = 0.0
+        if confidence < HMI_MIN_OCR_CONFIDENCE:
+            continue
         key = (jp, x, y, width, height)
         if key in seen:
             continue
@@ -5501,9 +5507,10 @@ Rules:
 4. If a box contains {source_language} plus numbers/units, keep the source text in jp and preserve nearby numbers/units in note.
 5. Keep {source_language} text exactly as visible. Do not translate in this step.
 6. Do not merge neighboring boxes. One crop equals one item.
-7. If text is uncertain, still return it with lower confidence and explain briefly in note.
-8. Set kind to one of: screen_title, top_button, navigation_button, action_button, parameter_label, alarm_label, status_label, value_field, unit_label, table_header, other.
-9. Use screen_title for the main page title, top_button for small top-row mode buttons, navigation_button for page/menu movement, action_button for register/cancel/call/start buttons, parameter_label for setting names, unit_label for unit-only cells, and value_field for numeric/value-only fields.
+7. Never guess or reconstruct unclear text. If the text is not fully readable, omit that box from the response.
+8. Every returned character must be directly supported by visible pixels in that crop. Familiar HMI wording, neighboring boxes, or likely engineering context are not evidence.
+9. Set kind to one of: screen_title, top_button, navigation_button, action_button, parameter_label, alarm_label, status_label, value_field, unit_label, table_header, other.
+10. Use screen_title for the main page title, top_button for small top-row mode buttons, navigation_button for page/menu movement, action_button for register/cancel/call/start buttons, parameter_label for setting names, unit_label for unit-only cells, and value_field for numeric/value-only fields.
 """.strip()
         content = [{"type": "input_text", "text": prompt}]
         for box in batch:
@@ -5537,6 +5544,8 @@ Rules:
                 confidence = max(0.0, min(float(item.get("confidence", 0.0)), 1.0))
             except (TypeError, ValueError):
                 confidence = 0.0
+            if confidence < HMI_MIN_OCR_CONFIDENCE:
+                continue
             box = box_by_no[box_no]
             regions.append(HmiTextRegion(
                 location=f"hmi_box:{box_no}",
@@ -5761,6 +5770,127 @@ def extract_hmi_text_regions_with_vision(
     else:
         merged_regions = merge_hmi_regions(all_regions)
     return merged_regions, total_usage
+
+
+def normalized_ocr_evidence_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", clean_text(text))
+    return re.sub(r"[\s\u3000]+", "", normalized)
+
+
+def verified_ocr_text_matches(detected_text: str, observed_text: str) -> bool:
+    detected = normalized_ocr_evidence_text(detected_text)
+    observed = normalized_ocr_evidence_text(observed_text)
+    return bool(detected and observed and detected == observed)
+
+
+def hmi_verification_crop(original, region: HmiTextRegion):
+    padding = max(4, int(min(region.width, region.height) * 0.08))
+    left = max(0, region.x - padding)
+    top = max(0, region.y - padding)
+    right = min(original.width, region.x + region.width + padding)
+    bottom = min(original.height, region.y + region.height + padding)
+    crop = original.crop((left, top, right, bottom)).convert("RGB")
+    scale = max(2, min(5, int(480 / max(1, crop.width))))
+    if scale > 1:
+        crop = crop.resize((crop.width * scale, crop.height * scale), Image.Resampling.LANCZOS)
+    if ImageEnhance is not None:
+        crop = ImageEnhance.Contrast(crop).enhance(1.20)
+        crop = ImageEnhance.Sharpness(crop).enhance(1.40)
+    return crop
+
+
+def verify_hmi_regions_with_vision(
+    raw: bytes,
+    regions: list[HmiTextRegion],
+    translation_direction: str = TRANSLATION_DIRECTION_JP_EN,
+    progress_callback=None,
+) -> tuple[list[HmiTextRegion], int, TokenUsage]:
+    """Independently verify OCR against pixels before translation or writeback.
+
+    The verification model never receives the first-pass transcription. It must
+    independently read each crop, and the app accepts only exact normalized
+    agreement at high confidence. Unclear or mismatched text is rejected.
+    """
+    if not regions:
+        return [], 0, TokenUsage()
+    original = Image.open(io.BytesIO(raw)).convert("RGB")
+    source_language, _target_language = direction_language_names(translation_direction)
+    verified: list[HmiTextRegion] = []
+    total_usage = TokenUsage()
+    rejected = 0
+
+    for start in range(0, len(regions), HMI_VERIFICATION_BATCH_SIZE):
+        batch = regions[start:start + HMI_VERIFICATION_BATCH_SIZE]
+        if progress_callback is not None:
+            batch_no = start // HMI_VERIFICATION_BATCH_SIZE + 1
+            total_batches = max(1, (len(regions) + HMI_VERIFICATION_BATCH_SIZE - 1) // HMI_VERIFICATION_BATCH_SIZE)
+            progress_callback("verify", batch_no, total_batches)
+        prompt = f"""
+You are a strict industrial OCR evidence verifier. Independently transcribe only the {source_language} characters that are clearly visible in each supplied crop.
+
+Return only valid JSON:
+{{"items":[{{"region_no":1,"readable":true,"observed_text":"exact visible text","confidence":0.99}}]}}
+
+Safety rules:
+1. This is production evidence checking. Never guess, infer, autocomplete, translate, or use likely HMI terminology.
+2. Judge each crop only from its visible pixels. You have not been given the first OCR result and must not assume one.
+3. Set readable=false and observed_text="" when any character is unclear, clipped, blurred, too small, or ambiguous.
+4. Return {source_language} text exactly as shown. Do not repair spelling, normalize wording, or add missing characters.
+5. Pure numbers, dates, times, units, and text only in the other language are not valid source text; mark them unreadable.
+6. Confidence must reflect visual certainty. Use 0.90 or above only when every returned character is unmistakable.
+7. Return exactly one item for every supplied region number.
+""".strip()
+        content = [{"type": "input_text", "text": prompt}]
+        for offset, region in enumerate(batch, start=1):
+            content.append({"type": "input_text", "text": f"Region {offset}"})
+            content.append({
+                "type": "input_image",
+                "image_url": image_to_png_data_url(hmi_verification_crop(original, region)),
+                "detail": "high",
+            })
+        response = openai_client().responses.create(
+            model=openai_model(),
+            input=[{"role": "user", "content": content}],
+            temperature=0,
+            timeout=openai_timeout_seconds(),
+        )
+        total_usage.add(response_token_usage(response))
+        payload = extract_json_payload(response.output_text)
+        evidence_by_no = {}
+        for item in payload.get("items", []):
+            try:
+                region_no = int(item.get("region_no", 0))
+                confidence = max(0.0, min(float(item.get("confidence", 0.0)), 1.0))
+            except (TypeError, ValueError):
+                continue
+            evidence_by_no[region_no] = (
+                bool(item.get("readable")),
+                clean_text(item.get("observed_text", "")),
+                confidence,
+            )
+
+        for offset, region in enumerate(batch, start=1):
+            readable, observed_text, confidence = evidence_by_no.get(offset, (False, "", 0.0))
+            if (
+                readable
+                and confidence >= HMI_MIN_VERIFICATION_CONFIDENCE
+                and should_translate(observed_text, translation_direction)
+                and verified_ocr_text_matches(region.jp, observed_text)
+            ):
+                verified.append(HmiTextRegion(
+                    location=region.location,
+                    jp=observed_text,
+                    x=region.x,
+                    y=region.y,
+                    width=region.width,
+                    height=region.height,
+                    confidence=min(region.confidence, confidence),
+                    note=region.note,
+                    kind=region.kind,
+                ))
+            else:
+                rejected += 1
+    return verified, rejected, total_usage
 
 
 def build_hmi_translation_prompt(
@@ -7107,6 +7237,11 @@ def render_hmi_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> N
                         f"Reading HMI boxes with OpenAI Vision: batch {current}/{total}..."
                     )
                     progress.progress(0.10 + ratio * 0.28)
+                elif stage == "verify":
+                    status.write(
+                        f"Verifying OCR against image pixels: batch {current}/{total}..."
+                    )
+                    progress.progress(0.55 + ratio * 0.15)
                 else:
                     status.write(
                         f"Checking remaining HMI areas: region {current}/{total}..."
@@ -7124,6 +7259,20 @@ def render_hmi_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> N
             )
             if not regions:
                 st.warning(f"No {source_language} text was detected. Try a sharper image or crop.")
+                return
+            candidate_region_count = len(regions)
+            status.write("Independently verifying every detected text region against the original image...")
+            regions, rejected_region_count, verification_usage = verify_hmi_regions_with_vision(
+                raw_image,
+                regions,
+                translation_direction,
+                update_image_detection_progress,
+            )
+            if not regions:
+                st.warning(
+                    f"The system found {candidate_region_count} possible text region(s), but none could be "
+                    "confirmed from visible pixels with production-level confidence. Nothing was translated or written back."
+                )
                 return
             missing_terms = missing_known_hmi_terms(raw_image, regions) if translation_direction == TRANSLATION_DIRECTION_JP_EN else []
             if missing_terms:
@@ -7184,8 +7333,12 @@ def render_hmi_translation(glossary: pd.DataFrame, plc_rules: pd.DataFrame) -> N
             total_usage = TokenUsage()
             total_usage.add(input_check_usage)
             total_usage.add(vision_usage)
+            total_usage.add(verification_usage)
             total_usage.add(translation_usage)
-            st.caption(f"Detected text regions: {len(regions):,} | API tokens: {total_usage.display()}")
+            st.caption(
+                f"Verified text regions: {len(regions):,}/{candidate_region_count:,} | "
+                f"Rejected as unclear or unconfirmed: {rejected_region_count:,} | API tokens: {total_usage.display()}"
+            )
             st.caption(f"Review detail: {review_detail} | Review rows: {len(review_regions):,}/{len(clean_regions):,}")
             quality_summary, quality_issues = hmi_result_quality_report(
                 review_regions,
